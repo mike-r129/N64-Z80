@@ -10,8 +10,10 @@ The emulator is meant to run within a [libdragon](https://github.com/DragonMinde
 application. It is not compatible with other Nintendo 64 development
 environments.
 
-> **Status:** early development (milestone M0: test harness and baseline
-> measurements). There is no assembly core yet. See [PLAN.md](PLAN.md).
+> **Status:** milestone M0 (test harness, baseline measurements) is done;
+> M1 (the asm run loop, with every opcode still on the C core) is next.
+> There is no assembly core yet, so there is nothing to integrate into mvs64
+> before M4. See [PLAN.md](PLAN.md).
 
 ## Features
 
@@ -46,6 +48,10 @@ runs:
   reference (`test/mutants/`) must each be caught;
 * the prelim and ZEXDOC instruction exercisers with CP/M BDOS stubs, checked
   per test group against exact instruction and cycle counts;
+* replays of recorded mvs64 sound-driver traces (`test/traces/*.z80t`,
+  gitignored because they contain game ROM; packed into the ROM when
+  present): every recorded step count, state hash, IN/OUT and RAM checkpoint
+  must match, and the replay time is the speed benchmark on real driver code;
 * benchmarks (COP0 Count around `z80_run`).
 
 Every verdict line starts with `>>> PASS` or `>>> FAIL`. Until milestone M1
