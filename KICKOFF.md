@@ -5,7 +5,8 @@ folder.
 
 ---
 
-We're starting a new project in this folder: **m64z80**, a hand-written MIPS
+We're starting a new project in this folder, **N64-Z80** (library prefix
+`m64z80` in the code): a hand-written MIPS
 assembly Z80 interpreter for the Nintendo 64 (VR4300, libdragon). It's the
 sibling of the m64k 68000 core, and the goal is a drop-in, bit-exact
 replacement for the C Z80 core in my Neo Geo emulator, mvs64, about 4× faster.
