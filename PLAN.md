@@ -11,7 +11,7 @@ A hand-written MIPS assembly Zilog Z80 interpreter for the N64 (VR4300,
 libdragon toolchain). It is a sibling to **m64k**, the 68000 core that mvs64
 already uses (`mvs64/m64k/`). It must be:
 
-- **Exact:** bit-for-bit identical to the reference C core (`seed/reference/`,
+- **Exact:** bit-for-bit identical to the reference C core (`reference/`,
   mvs64's tuned copy of superzazu/z80). That covers registers, all flags
   including undocumented Y/X, MEMPTR/WZ, R, cycle counts, and bus accesses
   with their cycle stamps.
@@ -58,18 +58,22 @@ already uses (`mvs64/m64k/`). It must be:
   tools/gen_tables.py  # makes n64z80_tables.S; checks cycle tables == reference
   test/
     testsuite.c        # N64 test ROM: ZEXDOC/ZEXALL + differential + bench
-    zdiff/             # differential harness (from seed/harness/zdiff)
+    zcore.c, zdiff.c   # core wrappers + differential harness (from seed/harness/zdiff)
+    zex.c, bench.c     # ZEX harness, benchmarks
+    mutants/           # planted-bug controls (sed scripts on reference/z80.c)
+    pc/                # host build of the same harness
     traces/            # recorded Neo Geo driver traces (generated, gitignored)
   Makefile             # builds n64z80_testsuite.z64 (like m64k/Makefile)
   docs/                # design notes, measurements log
 ```
 
-`seed/` holds the starting material copied from the mvs64 session (§12).
-Move pieces into the layout above as they're adopted, then delete `seed/`.
+`seed/` held the starting material copied from the mvs64 session (§12). It
+was adopted into the layout above in M0 and deleted; it is in the first
+commit's history.
 
 ## 3. API contract (must match mvs64's `z80.h` behavior)
 
-The reference is `seed/reference/z80.h` (mvs64 commit 54f7973, PR #21). Keep
+The reference is `reference/z80.h` (mvs64 commit 54f7973, PR #21). Keep
 the struct field names, because mvs64's `sound_neogeo.c` reads and writes
 them directly: `pc, sp, a, f, b, c, ..., iff1, iff2, halted, int_pending,
 nmi_pending, irq_line, iff_delay, cyc, r, wrote, wrote_any, irq_redeliver,
@@ -450,7 +454,7 @@ counted as their own entries):
   `N64_INST=/root/n64inst`. mvs64's README documents the setup; its libdragon
   fork is `mike-r129/libdragon`.
 
-## 12. Seed material (`seed/`)
+## 12. Seed material (`seed/`, adopted in M0 and removed)
 
 - **`seed/reference/`:** `z80.c`, `z80.h` and `z80.LICENSE` from mvs64 commit
   54f7973 (PR #21). This is the exact behaviour to match. Note its mvs64
