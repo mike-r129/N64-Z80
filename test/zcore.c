@@ -1,45 +1,73 @@
-// One core wrapper: compiled once per core with -DPFX=<name>, everything but
-// <PFX>_run hidden. Maps the neutral St onto the core's struct and runs
-// z80_run(until) once.
+// One core wrapper. Compiled once per core with -DPFX=<name> and the core's
+// source directory first on the include path (reference/, or a mutant copy
+// in build/). The core's public symbols are renamed to <PFX>_* so several
+// copies link side by side; everything else in z80.c is static.
+//
+// Port of seed/harness/zdiff/wrap.c, plus the zcore descriptor and dirty-page
+// tracking (the N64 harness restores and compares only touched pages).
 #include <string.h>
-#include "z80.c"
-#include "zdiff.h"
+#include <stdio.h>
+
+// The reference reports undefined opcodes on stderr, which on N64 is the
+// ISViewer log; random code hits them constantly. (stdio.h is included
+// first, so its fprintf declaration is not affected.)
+#define fprintf(...) ((void)0)
+
 #define CAT2(a, b) a##b
 #define CAT(a, b) CAT2(a, b)
+#define z80_hot          CAT(PFX, _z80_hot)
+#define z80_init         CAT(PFX, _z80_init)
+#define z80_step         CAT(PFX, _z80_step)
+#define z80_run          CAT(PFX, _z80_run)
+#define z80_gen_int      CAT(PFX, _z80_gen_int)
+#define z80_gen_nmi      CAT(PFX, _z80_gen_nmi)
+#define z80_debug_output CAT(PFX, _z80_debug_output)
+
+#include "z80.c"
+#include "zcore.h"
+
 static Run* cur;
 static uintptr_t map[256];
+
 static void ev(int kind, uint16_t addr, uint8_t val) {
-  if (cur->nev < 64) {
-    Ev* e = &cur->ev[cur->nev++];
+  if (cur->nev < ZD_EV_MAX) {
+    Ev* e = &cur->ev[cur->nev];
     e->kind = kind; e->addr = addr; e->val = val; e->cyc = (uint32_t)z80_hot.cpu.cyc;
   }
+  cur->nev++;
 }
+
 static void wbcb(void* ud, uint16_t addr, uint8_t val) {
-  (void)ud; cur->mem[addr] = val; z80_hot.cpu.wrote = 1; ev(1, addr, val);
+  (void)ud;
+  cur->mem[addr] = val;
+  cur->dirty[addr >> 8] = 1;
+  z80_hot.cpu.wrote = 1;
+  ev(1, addr, val);
 }
+
 static uint8_t rbcb(void* ud, uint16_t addr) { (void)ud; return cur->mem[addr]; }
+
+// The value depends on the port, the number of IN calls and the cycle stamp,
+// never on the number of logged events (those differ in direct-write mode).
 static uint8_t incb(z80* z, uint16_t port) {
   (void)z;
   uint8_t v = (uint8_t)(port * 7 + cur->nin++ * 13 + (z80_hot.cpu.cyc & 0xff));
   ev(3, port, v);
   return v;
 }
+
 static void outcb(z80* z, uint16_t port, uint8_t val) {
-  (void)z; z80_hot.cpu.wrote = 1; ev(2, port, val);
+  (void)z;
+  z80_hot.cpu.wrote = 1;
+  ev(2, port, val);
 }
-__attribute__((visibility("default")))
-void CAT(PFX, _run)(Run* r, uint32_t until) {
+
+static void diff_run(Run* r, uint32_t until) {
   z80* z = &z80_hot.cpu;
   cur = r;
   for (int i = 0; i < 256; i++) map[i] = (uintptr_t)r->mem;
   z->rmap = map; z->read_byte = rbcb; z->write_byte = wbcb;
   z->port_in = incb; z->port_out = outcb; z->userdata = 0;
-#ifdef TEST_WDIRECT
-  // Direct-write pages (see zd_direct in main.c): 0x40-0x5F and 0xF8-0xFF.
-  memset(z->wdirect, 0, sizeof z->wdirect);
-  z->wdirect[0x40 >> 5] = 0xFFFFFFFFu;
-  z->wdirect[0xF8 >> 5] = 0xFFu << (0xF8 & 31);
-#endif
   St* s = &r->st;
   z->pc = s->pc; z->sp = s->sp; z->ix = s->ix; z->iy = s->iy; z->mem_ptr = s->mem_ptr;
   z->a = s->a; z->f = s->f; z->b = s->b; z->c = s->c; z->d = s->d; z->e = s->e; z->h = s->h; z->l = s->l;
@@ -59,3 +87,16 @@ void CAT(PFX, _run)(Run* r, uint32_t until) {
   s->irq_line = z->irq_line; s->wrote = z->wrote; s->wrote_any = z->wrote_any;
   s->cyc = (uint32_t)z->cyc; s->irq_redeliver = (uint32_t)z->irq_redeliver;
 }
+
+#define STR2(x) #x
+#define STR(x) STR2(x)
+const zcore CAT(PFX, _core) = {
+  .name = STR(PFX),
+  .cpu = &z80_hot.cpu,
+  .init = z80_init,
+  .step = z80_step,
+  .run = z80_run,
+  .gen_int = z80_gen_int,
+  .gen_nmi = z80_gen_nmi,
+  .diff_run = diff_run,
+};
