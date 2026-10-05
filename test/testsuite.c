@@ -9,6 +9,7 @@
 #include <string.h>
 #include "zdiff.h"
 #include "zex.h"
+#include "replay.h"
 #include "bench.h"
 #include "tlog.h"
 #include "zex_expect.h"
@@ -98,13 +99,68 @@ static void run_zex(const zcore* core) {
          (unsigned long)(ticks / (TICKS_PER_SECOND / 1000)));
 }
 
+static int ends_with(const char* s, const char* suf) {
+  size_t a = strlen(s), b = strlen(suf);
+  return a >= b && !strcmp(s + a - b, suf);
+}
+
+// Replays every mvs64 owner trace in the ROM filesystem (test/traces/*.z80t,
+// packed by the Makefile when present): REF gives the baseline speed on real
+// driver code, NEW must replay clean, MUT1 must be caught.
+static void run_traces(void) {
+  char names[8][64];
+  int n = 0;
+  dir_t d;
+  if (dir_findfirst("rom:/", &d) == 0) {
+    do {
+      if (d.d_type == DT_REG && ends_with(d.d_name, ".z80t") && n < 8)
+        snprintf(names[n++], sizeof names[0], "%s", d.d_name);
+    } while (dir_findnext("rom:/", &d) == 0);
+  }
+  if (!n) { tlog("(no traces in the ROM: copy mvs64 *.z80t files to test/traces/)\n"); return; }
+  for (int i = 0; i < n; i++) {
+    char path[80];
+    snprintf(path, sizeof path, "rom:/%.63s", names[i]);
+    FILE* f = fopen(path, "rb");
+    if (!f) { verdict(0, "trace %.63s: cannot open (%ld, %ld)", names[i], 0, 0); continue; }
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t* tr = malloc(len);
+    if (!tr || fread(tr, 1, len, f) != (size_t)len) {
+      fclose(f); free(tr);
+      verdict(0, "trace %.63s: cannot load %ld bytes (%ld)", names[i], len, 0);
+      continue;
+    }
+    fclose(f);
+    const zcore* cores[] = { &REF_core, &NEW_core, &MUT1_core };
+    for (int c = 0; c < 3; c++) {
+      replay_result r = replay(cores[c], tr, len, c < 2 ? 4 : 0);
+      char what[96];
+      snprintf(what, sizeof what, "replay %.63s on %.15s", names[i], cores[c]->name);
+      if (c < 2)
+        verdict(r.ended && !r.bad, "%s: %ld instr, %ld mismatches", what, r.steps, r.bad);
+      else
+        verdict(r.bad || !r.ended, "%s: %ld mismatches, control (must be > 0)", what, r.bad, 0);
+      if (c == 0 && r.steps)
+        tlog("[BENCH] %s trace %-20s %5lu ns/instr  %4lu cycles/instr  (%ld instr, %ld runs)\n",
+             cores[c]->name, names[i],
+             (unsigned long)(r.ticks * 1000000000ull / TICKS_PER_SECOND / r.steps),
+             (unsigned long)(r.ticks * 2 / r.steps), r.steps, r.runs);
+    }
+    free(tr);
+  }
+}
+
 int main(void) {
   debug_init_isviewer();
   debug_init_usblog();
+  dfs_init(DFS_DEFAULT_LOCATION);
   tlog("\nN64Z80 testsuite (M0: reference vs reference)\n");
   tlog("config: ZDIFF_CASES=%d ZDIFF_SEED=%d ZEX_MAX_STEPS=%d\n", ZDIFF_CASES, ZDIFF_SEED, ZEX_MAX_STEPS);
 
   run_zdiff();
+  run_traces();
   bench_core(&REF_core);
   bench_window_copy();
   run_zex(&NEW_core);

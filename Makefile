@@ -25,7 +25,7 @@ SHA_prelim.com := 3b3578f19030a4df7e25ce852f763af26053b12582a576c4dffb014aa7c590
 SHA_zexdoc.cim := 10b7c3972ff6765712ed160e5bd8750e4a13642f62b75711e062ef06a7f2f7b5
 SHA_zexall.cim := af7e5d86146d390a68440fb85668648f14a648602da29a1816d2ef11459411ae
 
-src := test/testsuite.c test/zdiff.c test/zex.c test/bench.c
+src := test/testsuite.c test/zdiff.c test/zex.c test/bench.c test/replay.c
 asm := test/zex_roms.S
 OBJS := $(src:%.c=$(BUILD_DIR)/%.o) $(asm:%.S=$(BUILD_DIR)/%.o) $(CORES:%=$(BUILD_DIR)/zcore_%.o)
 
@@ -36,6 +36,17 @@ test: all
 
 $(BUILD_DIR)/$(ROM).elf: $(OBJS)
 $(ROM).z64: N64_ROM_TITLE="N64Z80 Testsuite"
+$(ROM).z64: $(BUILD_DIR)/$(ROM).dfs
+
+# mvs64 owner traces (test/traces/*.z80t: gitignored, they contain game ROM)
+# go into the ROM filesystem when present; the testsuite replays every one.
+TRACES := $(wildcard test/traces/*.z80t)
+$(BUILD_DIR)/$(ROM).dfs: $(TRACES:test/traces/%=filesystem/%) | filesystem
+filesystem/%.z80t: test/traces/%.z80t | filesystem
+	@echo "    [DATA] $@"
+	cp $< $@
+filesystem:
+	mkdir -p $@
 
 # One wrapper object per core; the core's directory goes first on the
 # include path so zcore.c's #include "z80.c" picks the right copy.
@@ -83,7 +94,7 @@ ares: $(ROM).z64
 		-Seconds $(ARES_SECONDS)
 
 clean:
-	rm -rf $(BUILD_DIR) $(ROM).z64
+	rm -rf $(BUILD_DIR) filesystem $(ROM).z64
 
 -include $(wildcard $(BUILD_DIR)/*.d $(BUILD_DIR)/test/*.d)
 

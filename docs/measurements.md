@@ -36,6 +36,12 @@ Conventions:
 | 2026-10-05 | 0dd4aef | ″ | ares | bank-window memcpy 16 KB, cold / warm | 1,521 / 1,545 µs |
 | 2026-10-05 | 0dd4aef | PC build (`make pc`, WSL gcc -O2) | PC | full ZEXDOC through z80_step | 67/67 OK, 5,764,169,747 instr, 46,734,978,649 cycles |
 | 2026-10-05 | 0dd4aef | ″ | PC | full ZEXDOC through z80_run | 67/67 OK, +5 instr / +33 cycles (harness overshoot, as documented) |
+| 2026-10-05 | 900c996 | testsuite + traces (`test/traces/*.z80t` from mvs64 2da789d / 61d8574) | ares | **C core baseline on real driver code:** replay `mslug_42s_1s` (busiest mission second, 454,792 instr) | **1,633 ns/instr (153 cycles)** |
+| 2026-10-05 | 900c996 | ″ | ares | C core: replay `mslug_36s_10s` (4,334,467 instr) | 1,640 ns/instr (153 cycles) |
+| 2026-10-05 | 900c996 | ″ | ares | C core: replay `samsho2_30s_5s` (166,202 instr) | 2,053 ns/instr (192 cycles) |
+| 2026-10-05 | 900c996 | ″ | ares | trace replay REF / NEW, all three traces | 0 mismatches, every RUN/STEP/IN/OUT/RAM/END check |
+| 2026-10-05 | 900c996 | ″ | ares | trace replay control MUT1 (BIT without H) | 2,007 / 19,310 / 1,011 mismatches (= mvs64's z80replay) |
+| 2026-10-05 | 900c996 | ″ | ares | zdiff throughput, same harness, new code layout | 1,629 cases/s (was 2,112 at 0dd4aef) |
 
 ## Notes on the rows
 
@@ -58,3 +64,14 @@ Conventions:
   counts for the same seed (MUT1 517 vs 507) because `long` is 64-bit on PC:
   random budgets that wrap 2³² cycles stop differently in the reference
   itself. C vs C is clean on both.
+- **2026-10-05, trace baseline (M0 exit metric).** 1.63 µs/instr on the
+  busiest Metal Slug second agrees with mvs64's in-game 1.65 µs (PR #21
+  build), so the replay is a faithful stand-in for the game's Z80 work,
+  minus the icache/dcache eviction by the 68k between slices. Metal Slug's
+  mission runs 370k–455k instructions per emulated second (mvs64 correction,
+  test/traces/README.md), so the C core needs ≈ 0.74 s of N64 time per
+  audio second at the 455k peak.
+- **2026-10-05, zdiff throughput.** Only the code layout changed between
+  0dd4aef and 900c996 (DFS and the replay code linked in), and the C-vs-C
+  harness slowed 23%: N64 timings are layout-sensitive, so compare cores
+  within one build, never across builds.

@@ -9,7 +9,7 @@ CORES := REF NEW MUT1 MUT2 MUT3 MUT4
 
 all: $(B)/zpc
 
-$(B)/zpc: main.c $(ROOT)/test/zdiff.c $(ROOT)/test/zex.c $(CORES:%=$(B)/zcore_%.o)
+$(B)/zpc: main.c $(ROOT)/test/zdiff.c $(ROOT)/test/zex.c $(ROOT)/test/replay.c $(CORES:%=$(B)/zcore_%.o)
 	$(CC) $(CFLAGS) -o $@ $^
 
 $(B)/zcore_REF.o $(B)/zcore_NEW.o: $(ROOT)/test/zcore.c $(ROOT)/reference/z80.c $(ROOT)/reference/z80.h
