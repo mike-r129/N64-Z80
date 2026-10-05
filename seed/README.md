@@ -3,7 +3,7 @@
 This is temporary. Move things into the real layout (PLAN.md §2) as they're
 adopted, then delete this folder.
 
-## reference/
+## reference/ (adopted: now at the repo root as reference/)
 `z80.c`, `z80.h` and `z80.LICENSE` (MIT, superzazu/z80) as of mvs64 commit
 54f7973, PR #21 "z80: inline dispatch, gate interrupts on one masked word".
 This is the behaviour the asm core must match bit for bit.
