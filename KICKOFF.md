@@ -6,7 +6,7 @@ folder.
 ---
 
 We're starting a new project in this folder, **N64-Z80** (library prefix
-`m64z80` in the code): a hand-written MIPS
+`n64z80` in the code): a hand-written MIPS
 assembly Z80 interpreter for the Nintendo 64 (VR4300, libdragon). It's the
 sibling of the m64k 68000 core, and the goal is a drop-in, bit-exact
 replacement for the C Z80 core in my Neo Geo emulator, mvs64, about 4× faster.
@@ -43,10 +43,13 @@ Then start **Milestone M0** from PLAN.md §6:
    retrying when the first run logs nothing. Confirm C vs C is clean and the
    planted-bug controls are caught.
 4. Write `docs/measurements.md` and record the baseline.
-5. The §4.2 decision needs the Neo Geo bank-switch rate. Tell me what mvs64
-   change you'd use to count IN 0x08–0x0B per second in Metal Slug and
-   samsho2. Don't edit mvs64 without asking: it's a separate repo with its
-   own branch/PR workflow.
+5. Bank-switch rates are already measured (PLAN §4.2: Metal Slug about 50
+   switches per second on each window), so the read-path choice will be
+   decided by the trace bench. For the bench, propose how mvs64 should dump
+   a Metal Slug Z80 snapshot (see
+   `C:\Users\Mike\Desktop\mvs64\Z80-INTEGRATION-PLAN.md` §1.3). Don't edit
+   mvs64 without asking: it's a separate repo with its own branch/PR
+   workflow.
 
 Ground rules:
 - **Exactness first.** Every asm change is checked by the differential test

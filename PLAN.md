@@ -1,8 +1,9 @@
-# m64z80: an optimized Z80 core for Nintendo 64: project plan
+# n64z80: an optimized Z80 core for Nintendo 64: project plan
 
 > **Names.** The repo/folder is **`N64-Z80`** (matching `N64-NEOGEO`).
-> Inside the code, the library uses the **`m64z80`** prefix (files, symbols,
-> sections), mirroring m64k.
+> Inside the code, the library uses the **`n64z80`** prefix (files, symbols,
+> sections; `N64Z80_` for macros), matching the repo name. It is not
+> `m64z80`: "M64" is now ModRetro's N64-compatible console.
 
 ## 1. Goal
 
@@ -49,17 +50,17 @@ already uses (`mvs64/m64k/`). It must be:
 <repo root>/
   README.md            # m64k-style: what it is, features, how to use, config
   LICENSE              # MIT for the asm core; reference/ keeps its own MIT notice
-  m64z80.h             # public API (mirrors mvs64 z80.h, see §3)
-  m64z80_asm.S         # the core
-  m64z80_tables.S      # generated: dispatch tables, cycle tables (do not edit)
-  m64z80.c             # C glue: init, z80_step, slow paths, callback trampolines
+  n64z80.h             # public API (mirrors mvs64 z80.h, see §3)
+  n64z80_asm.S         # the core
+  n64z80_tables.S      # generated: dispatch tables, cycle tables (do not edit)
+  n64z80.c             # C glue: init, z80_step, slow paths, callback trampolines
   reference/           # the C reference core (from seed/reference), MIT
-  tools/gen_tables.py  # makes m64z80_tables.S; checks cycle tables == reference
+  tools/gen_tables.py  # makes n64z80_tables.S; checks cycle tables == reference
   test/
     testsuite.c        # N64 test ROM: ZEXDOC/ZEXALL + differential + bench
     zdiff/             # differential harness (from seed/harness/zdiff)
     traces/            # recorded Neo Geo driver traces (generated, gitignored)
-  Makefile             # builds m64z80_testsuite.z64 (like m64k/Makefile)
+  Makefile             # builds n64z80_testsuite.z64 (like m64k/Makefile)
   docs/                # design notes, measurements log
 ```
 
@@ -143,8 +144,17 @@ measurement.
   - Bank switches (IN 0x08–0x0B on Neo Geo) memcpy the 2/4/8/16 KB window.
   - Every read is then `addu + lbu`, with no page-crossing problem.
   - Self-modifying code in RAM stays coherent automatically.
-  - Viable if bank switches are rare: **measure IN 0x08–0x0B per second in
-    Metal Slug and samsho2 first.** Below about 500/s, take this option.
+  - Viable only if bank switches are rare enough. **Measured (mvs64 PC
+    build, 2026-10-05):** Metal Slug switches *each* of the four windows
+    about 50 times per second (2,995 value changes in 60 s per window).
+    samsho2 switches about 0.3 times per second.
+    - For Metal Slug that's about 1.5 MB/s of copying (16+8+4+2 KB at
+      50/s), roughly 15–30 ms of N64 time per second.
+    - Option B's cost is about the same: about 2 instructions × 1M
+      instructions/s, about 21 ms/s.
+    - So it's a close call. Benchmark both on the Metal Slug trace, or
+      consider a **hybrid**: flat image for fixed ROM (0x0000–0x7FFF) and
+      RAM, page table plus limit for the banked windows.
   - Needs an owner-side API, e.g. `z80_map_window(base, size, src)`, plus a
     fallback.
 - **Option B, rmap plus a limit:** per 256-byte page, `{bias, limit}`, where
@@ -164,10 +174,10 @@ measurement.
 - Hot handlers inline the dispatch tail
   (`lbu op; sll; addu; lw; jr` with the cycle adjust in the delay slot).
   Cold handlers `j dispatch_common`.
-- **Icache budget:** the hot set lives in `.text.m64z80hot`, ordered by
+- **Icache budget:** the hot set lives in `.text.n64z80hot`, ordered by
   frequency, and stays at or below about 4 KB. It covers the top ~60
   opcodes, the prefix entries, the write stub and dispatch. Everything else
-  goes in `.text.m64z80cold`.
+  goes in `.text.n64z80cold`.
 - The 68k runs between Z80 slices and evicts the icache. Warm-up per slice is
   real, so long slices (owner-controlled `until`) matter.
 - **Prefixes:** CB, ED and DDCB/FDCB each get a table (16-bit offset tables to
@@ -205,7 +215,7 @@ measurement.
   `wrote_any = (last_write_n != sentinel)`.
 
 ### 4.5 Writes
-- One shared out-of-line stub, `m64z80_wr` (t0 = address, t1 = value,
+- One shared out-of-line stub, `n64z80_wr` (t0 = address, t1 = value,
   `bal`). Never inline it: mvs64 measured inlined bus checks as 6–10%
   slower because of icache growth.
 - A `wmap[256]` write page table: non-null means store directly, null means
@@ -233,7 +243,7 @@ measurement.
 The asm can't run in an x86 harness. Don't rely on qemu-user either: Linux
 mips64 toolchains are n32/n64 ABI, not libdragon's o64.
 
-**`make test`** builds `m64z80_testsuite.z64`: one ROM linking the asm core
+**`make test`** builds `n64z80_testsuite.z64`: one ROM linking the asm core
 **and** the reference C core.
 
 1. **Differential test:** this is the port of `seed/harness/zdiff` to N64.
@@ -290,7 +300,8 @@ number in `docs/measurements.md`)
   - The test ROM runs the reference core against itself (C vs C) with the
     differential and ZEX tests; planted bugs are caught.
   - Bench ROM with trace replay working.
-  - Measure Neo Geo bank-switch rates, then pick §4.2 option A or B.
+  - Pick §4.2 option A, B or the hybrid. The bank-switch rates are already
+    measured (§4.2), so decide with the trace bench.
   - Exit: baseline µs/instruction of the C core on the trace, inside the
     bench ROM.
 - **M1: asm skeleton, everything through the C fallback.**
@@ -307,16 +318,18 @@ number in `docs/measurements.md`)
   the §4.3 icache budget.
   - Exit: µs/instruction on the trace ≤ 0.6.
 - **M4: full asm coverage.** The C fallback becomes a debug option
-  (`M64Z80_C_FALLBACK=1`).
+  (`N64Z80_C_FALLBACK=1`).
   - Exit: ZEXALL plus differential clean with the fallback disabled; ≤ 0.45
     µs/instruction.
 - **M5: mvs64 integration** (on a branch in mvs64).
-  - Vendor the core into mvs64 as `m64z80/` (like `m64k/`), add a
+  - Vendor the core into mvs64 as `n64z80/` (like `m64k/`), add a
     `Z80_CORE=asm|c` build switch, add the owner-side window/wmap setup, and
     check the `z80_anchor.c` / m64k dcache pins.
   - Exit: the mvs64 two-game PC gate stays C (unchanged). The N64 build with
     the asm core gives the same WAV hash under DET_AUDIO and INPUT replay as
     the C core, so add an N64 audio-hash gate.
+  - mvs64's side of this milestone, including its entry criteria and prep
+    work, is in `C:\Users\Mike\Desktop\mvs64\Z80-INTEGRATION-PLAN.md`.
   - Measure ares fps and sound % on Metal Slug and samsho2.
 - **M6 (optional): pre-decoded micro-op pages** (§9), only if M5 falls short.
 
@@ -346,8 +359,9 @@ number in `docs/measurements.md`)
 
 1. **Icache:** the hot set outgrowing about 4 KB, or cold warm-up after each
    68k slice eating the gain. Measure continuously; keep hot/cold sections.
-2. **Bank-switch frequency:** unknown, and it decides the whole read path
-   (§4.2). Measure first.
+2. **Bank switching:** Metal Slug rebanks all four windows about 50 times per
+   second, which makes the flat-image read path less clear-cut (§4.2).
+   Decide by benchmark.
 3. **Stop semantics** (loop edge, HALT, event order): mvs64's idle skip
    depends on them. A drift here shows up as audio glitches, not as test
    failures, unless the differential test also compares stop points (it
