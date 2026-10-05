@@ -15,22 +15,35 @@ already uses (`mvs64/m64k/`). It must be:
   mvs64's tuned copy of superzazu/z80). That covers registers, all flags
   including undocumented Y/X, MEMPTR/WZ, R, cycle counts, and bus accesses
   with their cycle stamps.
-- **Fast:** the target is **≤ 0.45 µs per Z80 instruction** (about 42 VR4300
-  cycles) on the Metal Slug sound driver, 4× faster than the C core.
+- **Fast:** the design target is **≤ 0.45 µs per Z80 instruction** (about 42
+  VR4300 cycles) on the Metal Slug sound driver, 3.6× faster than the C core
+  (1.63 µs on the same trace). The hard requirement is lower, about 0.9 µs
+  (see "Why"); the gap is headroom for cache warm-up after 68k slices.
 - **A drop-in for mvs64:** the same API as mvs64's `z80.h`, chosen at build
   time with a flag (`Z80_CORE=asm|c`).
 - **Generic:** no Neo Geo-specific code in the core, so other N64 emulators
   with a Z80 (Master System, Game Gear, ColecoVision, MSX) can use it.
 
-### Why (measured in mvs64, Oct 2026)
-- In Metal Slug's first mission the Z80 runs about **1M instructions per
-  emulated second**.
-- The C core costs **1.65–1.85 µs per instruction** (155–173 host cycles),
-  so the Z80 alone needs about 1.8 s of N64 time per second of audio.
-  YM2610 synthesis adds another 0.38 s.
-- So sound can't run in real time: the overload governor mutes it and the
-  game runs at about 10 fps.
-- To fit, the Z80 has to reach about 0.4 µs per instruction.
+### Why (measured in mvs64, Oct 2026; corrected 2026-10-05)
+- In Metal Slug's first mission the Z80 runs **370k–455k instructions per
+  emulated second** (peak 455k: trace `mslug_42s_1s`). An earlier "about 1M"
+  read mvs64's N64 `[SNDRMS]` intervals as 1 s; they cover about 2.3 s of
+  audio (`test/traces/README.md`).
+- The C core costs **1.65–1.85 µs per instruction** in game, and 1.63 µs
+  replaying the busiest Metal Slug second in our testsuite ROM
+  (`docs/measurements.md`). So the Z80 alone needs about **0.74 s of N64
+  time per second of audio** at the peak.
+- In release builds sound can't keep up with the 68k and video on top: the
+  overload governor mutes it and the mission runs at about 10 fps.
+- **Requirement:** `t ≤ B / 455k`, where B is the N64 time per audio second
+  the Z80 may use. The original plan implied B ≈ 0.4 s (0.4 µs × 1M), which
+  now gives **≤ 0.88 µs** (1.9× the C core). B should be confirmed from
+  release-build mvs64 profiles (frame time minus 68k, video and YM2610).
+  Caution: N64 DET_AUDIO builds generate about 2.4 frames of audio per
+  emulated frame (the pump emits one 1,760-sample AI buffer per 735-sample
+  frame), so their `snd%` overstates the real-time sound load by about 2.4×;
+  the YM2610 "0.38 s per second" figure needs re-checking for the same
+  reason.
 - C-level tuning got about 10–15% per round (mvs64 PRs #19 and #21). The rest
   needs an asm core.
 - Profile of the C core: about half of each instruction was loop and dispatch
@@ -143,7 +156,7 @@ measurement.
   immediately.
 
 ### 4.2 PC and memory reads: decide by measurement first (M0)
-- **Option A, flat 64 KB image (preferred):** the owner keeps one
+- **Option A, flat 64 KB image (not chosen, see the decision below):** the owner keeps one
   contiguous host image of the Z80 address space.
   - Bank switches (IN 0x08–0x0B on Neo Geo) memcpy the 2/4/8/16 KB window.
   - Every read is then `addu + lbu`, with no page-crossing problem.
@@ -159,6 +172,15 @@ measurement.
     - So it's a close call. Benchmark both on the Metal Slug trace, or
       consider a **hybrid**: flat image for fixed ROM (0x0000–0x7FFF) and
       RAM, page table plus limit for the banked windows.
+- **Decision (M0, 2026-10-05): option B, rmap plus limit.** The window
+  copies were measured on N64 (testsuite `[BENCH] window copy`, ares): cold
+  178 / 331 / 767 / 1,559 µs for 2 / 4 / 8 / 16 KB, about 8 cycles per byte,
+  and ≥ 8 KB copies flush the whole dcache. At 50 switches/s per window
+  that's about **140 ms of N64 time per second** for option A, against
+  roughly 10–30 ms/s for option B (2–6 extra cycles × 455k instructions/s).
+  The hybrid still needs B's checks for the windows, so it is not worth its
+  complexity now. A TLB-aliased image (design-notes §6, "A2") is the one
+  variant that avoids the copy; revisit it only with a measurement after M3.
   - Needs an owner-side API, e.g. `z80_map_window(base, size, src)`, plus a
     fallback.
 - **Option B, rmap plus a limit:** per 256-byte page, `{bias, limit}`, where
@@ -300,7 +322,9 @@ mips64 toolchains are n32/n64 ABI, not libdragon's o64.
 ## 6. Milestones (each ends with the differential test clean and a measured
 number in `docs/measurements.md`)
 
-- **M0: harness and decisions.**
+- **M0: harness and decisions.** *Done 2026-10-05: C vs C clean, controls
+  caught, trace replay clean, option B chosen, C core 1.63 µs/instr on the
+  Metal Slug trace (`docs/measurements.md`).*
   - The test ROM runs the reference core against itself (C vs C) with the
     differential and ZEX tests; planted bugs are caught.
   - Bench ROM with trace replay working.
@@ -364,8 +388,8 @@ number in `docs/measurements.md`)
 1. **Icache:** the hot set outgrowing about 4 KB, or cold warm-up after each
    68k slice eating the gain. Measure continuously; keep hot/cold sections.
 2. **Bank switching:** Metal Slug rebanks all four windows about 50 times per
-   second, which makes the flat-image read path less clear-cut (§4.2).
-   Decide by benchmark.
+   second. Measured window copies make the flat image about 5–14× costlier
+   than rmap plus limit, so the read path is option B (§4.2).
 3. **Stop semantics** (loop edge, HALT, event order): mvs64's idle skip
    depends on them. A drift here shows up as audio glitches, not as test
    failures, unless the differential test also compares stop points (it
@@ -425,12 +449,18 @@ counted as their own entries):
 
 **Measured costs:**
 - C core: 1.85 µs/instruction on mvs64 main (PR #19), 1.65 µs after PR #21.
+- C core replaying the Metal Slug traces in the testsuite ROM (ares):
+  1.63 µs (busiest second) and 1.64 µs (10 s); samsho2 2.05 µs.
 - C core synthetic in-cache loop (`LD A,(HL); AND A; INC HL; JR`): 0.94 µs.
 - C core real driver, isolated: 1.87 µs.
 
 **The game workload:**
-- Metal Slug mission: about 1M Z80 instructions per second, with the YM2610
-  timer A firing about 400×/s and about 1,300 instructions per tick.
+- Metal Slug mission: 370k–455k Z80 instructions per emulated second
+  (corrected; not 1M), with the YM2610 timer A firing about 400×/s and
+  about 1,300 instructions per tick.
+- Recorded traces (mvs64 `MVS64_Z80TRACE`, in gitignored `test/traces/`):
+  Metal Slug 42–43 s (454,792 instructions), 36–46 s (4.33M), samsho2
+  30–35 s (166,202).
 - samsho2: about 1.74M instructions per 50 s.
 
 **VR4300:**
