@@ -138,3 +138,32 @@ don't apply; needs a check of m64k's TLB budget.
 - `long` is 32 bits under o64, so the harness folds `cyc` into 64 bits.
 - The trace-replay bench needs a Z80 snapshot dump from mvs64 (a separate
   mvs64 change); until then the bench is synthetic.
+
+## 2026-10-05 (late): traces, corrected rate, §4.2 decided
+
+- **Traces.** mvs64 PR #22 added `MVS64_Z80TRACE`, a recording of every
+  owner action (runs, steps, IRQ/NMI, idle-skip writes, bank switches, IN/OUT
+  with cycle stamps). `test/replay.c` ports mvs64's reference replay; the
+  testsuite replays every `test/traces/*.z80t` on REF (timed), NEW (must be
+  clean) and MUT1 (must be caught). This is both the speed benchmark on real
+  driver code and a correctness test that covers IRQ changes made inside
+  port callbacks (PLAN.md §8 risk 4).
+- **Rate correction.** Metal Slug runs 370k–455k instructions per emulated
+  second, not 1M. Root cause on the mvs64 side, as far as I can tell from
+  `platform_n64.c`: under `MVS64_DET_AUDIO` the pump loop stops when
+  `filled * n >= det_samples`, but `n` is the AI buffer length (libdragon:
+  `freq / 25` rounded down to 8 = 1,760 samples) and `det_samples` is 735,
+  so each emulated frame generates 1,760 samples, about 2.4 frames of audio.
+  That makes N64 `[SNDRMS]` intervals about 2.3 s long and DET `snd%`
+  figures about 2.4× too high. Release builds fill by ring level and are not
+  affected. To be confirmed in mvs64 (not edited from here).
+- **Target.** Requirement `t ≤ B / 455k`; the plan's implied B = 0.4 s/s
+  gives 0.88 µs. The design target stays ≤ 0.45 µs (PLAN.md §1).
+- **§4.2: option B.** Measured copy costs make the flat image cost about
+  140 ms/s at Metal Slug's switch rate, against 10–30 ms/s for rmap plus
+  limit (PLAN.md §4.2).
+- **History note.** Commit 58b1194 ("use the n64z80 code prefix") also
+  contains outside edits to PLAN.md and KICKOFF.md made while it was being
+  prepared (the measured bank-switch rates, the hybrid option, the pointer to
+  mvs64's `Z80-INTEGRATION-PLAN.md`). The content is intended; only the
+  commit message under-describes it.
