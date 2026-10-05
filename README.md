@@ -37,17 +37,33 @@ To be written once the core exists (milestone M1). The API contract is in
 ## Testing
 
 Everything runs on N64 (in ares, or on real hardware). `make` builds
-`n64z80_testsuite.z64`, a single ROM that links both the assembly core and
-the reference C core and runs:
+`n64z80_testsuite.z64`, a single ROM that links every core under test and
+runs:
 
 * a differential test: random CPU states and memory, both cores run the same
-  case, and the full state, every bus event, the memory image and the stop
-  point must match;
-* the ZEXDOC/ZEXALL instruction exercisers, with CP/M BDOS stubs;
+  case, and the full state, every bus event (with its cycle stamp), the
+  memory image and the stop point must match. Planted-bug mutants of the
+  reference (`test/mutants/`) must each be caught;
+* the prelim and ZEXDOC instruction exercisers with CP/M BDOS stubs, checked
+  per test group against exact instruction and cycle counts;
 * benchmarks (COP0 Count around `z80_run`).
 
-The toolchain is libdragon's, with `N64_INST` set (for example
-`/root/n64inst` in WSL).
+Every verdict line starts with `>>> PASS` or `>>> FAIL`. Until milestone M1
+the candidate core is the reference itself, which validates the harness.
+
+```sh
+# in WSL, with the libdragon toolchain
+export N64_INST=/root/n64inst
+make                    # fetches the ZEX ROMs once, builds the ROM
+make ares               # runs it headless in ares, stops at the done marker
+make pc                 # host build of the same harness (build/pc/zpc)
+make ZEX_MAX_STEPS=0    # all 67 ZEXDOC groups (hours on N64)
+```
+
+`tools/ares-run.ps1` can also be run directly from PowerShell; set
+`ARES_EXE` if `ares.exe` is not on the PATH. Measurements are logged in
+[docs/measurements.md](docs/measurements.md) and design decisions in
+[docs/design-notes.md](docs/design-notes.md).
 
 ## License
 
