@@ -1,0 +1,22 @@
+# Build outputs
+build/
+filesystem/
+*.z64
+*.elf
+*.o
+*.d
+*.dfs
+*.map
+
+# ZEX exercisers (GPLv2, Frank D. Cringle): fetched by the Makefile, not
+# committed. See test/roms/README.md.
+test/roms/*.com
+test/roms/*.cim
+
+# Recorded Neo Geo driver traces (generated)
+test/traces/
+
+# ares run logs
+*.log
+ares-*.txt
+ares-*.txt.err

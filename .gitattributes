@@ -1,0 +1,5 @@
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.com binary
+*.cim binary
+*.z64 binary
