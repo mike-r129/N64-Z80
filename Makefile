@@ -38,7 +38,7 @@ OBJS := $(BUILD_DIR)/n64z80.o $(BUILD_DIR)/n64z80_asm.o \
 	$(src:%.c=$(BUILD_DIR)/%.o) $(asm:%.S=$(BUILD_DIR)/%.o) $(CORES:%=$(BUILD_DIR)/zcore_%.o)
 
 N64_CFLAGS += -I. -Itest -Ireference -I$(BUILD_DIR)
-N64_ASFLAGS += -I.
+N64_ASFLAGS += -I. -I$(BUILD_DIR)
 
 all: $(ROM).z64
 test: all
@@ -78,6 +78,12 @@ $(BUILD_DIR)/n64z80_ref.c: reference/z80.c
 	    -e 's/z->port_out(z, /n64z80_c_out(z, /' $< > $@
 	@! grep -n -e '->write_byte(' -e '->port_out(' $@ || (rm -f $@; false)
 $(BUILD_DIR)/n64z80.o: $(BUILD_DIR)/n64z80_ref.c
+
+# Cycle tables and sz53p for the asm handlers, taken from the reference.
+$(BUILD_DIR)/n64z80_tables.h: reference/z80.c tools/gen_tables.py
+	@mkdir -p $(dir $@)
+	python3 tools/gen_tables.py $< > $@
+$(BUILD_DIR)/n64z80_asm.o: $(BUILD_DIR)/n64z80_tables.h
 
 $(BUILD_DIR)/zcore_MUT%.o: test/zcore.c $(BUILD_DIR)/mut%/z80.c
 	@echo "    [CC] $< (MUT$*)"
