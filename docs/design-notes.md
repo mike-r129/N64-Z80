@@ -243,3 +243,58 @@ For M2 (from the advisor's review):
   0x20, then an IM1 accept to 0x38 > 0x20).
 - With the fallback disabled (M4), a straddling instruction needs a bounce
   buffer: copy ≤ 4 bytes with 16-bit wrap into .sdata and point s5/v1 at it.
+
+## 2026-10-06 (M2): an asm handler for every opcode
+
+M2 went further than its "top 20" scope: every unprefixed, CB, DD/FD,
+DD/FD CB and ED opcode now has an asm handler, so the C fallback only runs
+prefix chains (DD DD, FD ED, ...) and instructions that straddle a mapping
+boundary; on the three traces it runs 0 instructions. Interrupt service and
+`z80_step` are still the reference's C (M4).
+
+- **Prefixes change no state.** CB/DD/ED/FD handlers only read the next
+  byte and jump through that prefix's table; the target handler charges the
+  whole instruction's cycles and the second R increment, so any table entry
+  can be `pfx_fallback` (rewind to pc0, whole instruction in C). One prefix
+  plus operands is at most 4 bytes, which the dispatch's limit check already
+  guarantees. DD/FD before an opcode exec_opcode_ddfd doesn't handle runs
+  the unprefixed handler after `cyc_ddfd[op]` (`ddfd_base`). The tables are
+  built by GAS from the handlers that exist and from case lists that
+  `tools/gen_tables.py` extracts from the reference (which DD/FD opcodes are
+  index forms, which ED opcodes exist), together with the cycle tables and
+  sz53p, so nothing is transcribed by hand.
+- **Reference quirk found by the differential test:** `BIT n,(HL)` writes
+  the (unchanged) byte back after its +4 cycles (`exec_opcode_cb` writes
+  whenever the operand is (HL)). It is a bus event and sets `wrote`; the asm
+  does the same. DD/FD CB `BIT` does not write.
+- **Write page map.** `n64z80_set_wmap()` lets the owner mark pages whose
+  writes are plain stores (work RAM): `wr8` stores directly instead of
+  calling `write_byte`. The trace replay maps 0xF800-0xFFFF this way, as
+  mvs64 will; zdiff's direct-write mode uses it on the asm core.
+- **Tools.** zdiff bisects a reported mismatch to its first divergent
+  instruction (it found the BIT write in one run); `make PROF=1` builds a
+  sampling per-opcode cycle profile of the asm core on the traces.
+
+Performance findings (all A/B measured, see measurements.md):
+
+- **The core is icache-bound.** Inlining the 10-instruction dispatch in
+  every handler made the core ~55 KB; replacing it with one shared
+  `dispatch` (each handler ends `b dispatch` with its last instruction in
+  the delay slot) was -10% on Metal Slug, -26% on samsho2. Code size beats
+  instruction count here.
+- **Measure with the layout pinned.** Every core edit moved the harness's
+  code in the direct-mapped icache and changed timings by up to +-15%
+  (the C core's own trace time moved too). The testsuite now links the core
+  last, in its own sections, on a 16 KB boundary (`N64Z80_ICACHE_ALIGN`),
+  so the harness stays put and only the core's own layout varies; compare
+  timings only between builds with the same test knobs (they change the
+  harness's size).
+- **Hot/cold sections** (the Metal Slug profile's top ~60 opcodes, the
+  dispatch, the run loop and the shared tails in `.text.n64z80hot`, about
+  6.6 KB) gain 3% / 9% once the layout is pinned; before pinning, the same
+  change measured as a loss.
+- Remaining cost: ~61 cycles per instruction on Metal Slug (C core 152),
+  against ~20 instructions for a simple op: the rest is cache misses. Port
+  instructions cost 500-900 cycles each (full state sync around the owner
+  callback). M3's exit (<= 0.6 us) and M4's (<= 0.45 us) are not reached
+  yet.
