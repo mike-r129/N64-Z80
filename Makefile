@@ -3,7 +3,9 @@
 #   make                 build n64z80_testsuite.z64 (fetches the ZEX ROMs once)
 #   make ares            build, then run it headless in ares (tools/ares-run.ps1)
 #   make pc              host build of the harness (build/pc/zpc)
-# Test knobs: ZDIFF_CASES, ZDIFF_SEED, ZEX_MAX_STEPS (0 = all 67 ZEXDOC groups).
+# Test knobs: ZDIFF_CASES, ZDIFF_SEED, ZEX_MAX_STEPS (0 = all 67 groups),
+# ZEX_SETS (1 = ZEXDOC, 2 = ZEXALL, 3 = both), ZEX_ONLY=1 (skip everything
+# but prelim and ZEX). Full ZEXALL: make ZEX_ONLY=1 ZEX_SETS=2 ZEX_MAX_STEPS=0.
 BUILD_DIR = build
 include $(N64_INST)/include/n64.mk
 
@@ -17,6 +19,8 @@ CORES := REF ASM MUT1 MUT2 MUT3 MUT4
 ZDIFF_CASES ?= 20000
 ZDIFF_SEED ?= 1
 ZEX_MAX_STEPS ?= 5000000
+ZEX_SETS ?= 3
+ZEX_ONLY ?= 0
 
 # ZEX exercisers (GPLv2: fetched, not committed). See test/roms/README.md.
 ZEX_COMMIT := d64fe10a2274e5e40019b1086bf7d8990cbc5f23
@@ -90,8 +94,8 @@ $(BUILD_DIR)/mut%/z80.c: reference/z80.c test/mutants/mut%.sed
 # so changing one rebuilds testsuite.o.
 $(BUILD_DIR)/test_config.h: FORCE
 	@mkdir -p $(BUILD_DIR)
-	@printf '#define ZDIFF_CASES %s\n#define ZDIFF_SEED %s\n#define ZEX_MAX_STEPS %s\n' \
-		$(ZDIFF_CASES) $(ZDIFF_SEED) $(ZEX_MAX_STEPS) > $@.tmp
+	@printf '#define ZDIFF_CASES %s\n#define ZDIFF_SEED %s\n#define ZEX_MAX_STEPS %s\n#define ZEX_SETS %s\n#define ZEX_ONLY %s\n' \
+		$(ZDIFF_CASES) $(ZDIFF_SEED) $(ZEX_MAX_STEPS) $(ZEX_SETS) $(ZEX_ONLY) > $@.tmp
 	@cmp -s $@.tmp $@ && rm -f $@.tmp || mv $@.tmp $@
 $(BUILD_DIR)/test/testsuite.o: $(BUILD_DIR)/test_config.h
 

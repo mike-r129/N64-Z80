@@ -26,6 +26,14 @@
 #ifndef ZEX_MAX_STEPS
 #define ZEX_MAX_STEPS 5000000
 #endif
+// Exercisers to run: 1 = ZEXDOC, 2 = ZEXALL, 3 = both.
+#ifndef ZEX_SETS
+#define ZEX_SETS 3
+#endif
+// 1: only prelim and the exercisers (long full-suite runs).
+#ifndef ZEX_ONLY
+#define ZEX_ONLY 0
+#endif
 
 #define DONE_MARKER "*** N64Z80 TESTSUITE DONE ***"
 
@@ -85,7 +93,7 @@ static void run_zex_groups(const zcore* core, const char* name, const uint8_t* i
     zex_result r = zex_run(core, img, len, g, 1, 1);
     int ok = r.ok == 1 && !r.err && r.complete == 1 && r.steps == e->run_steps &&
              r.cycles == e->run_cycles;
-    if (!ok)
+    if (!ok || ZEX_ONLY)   // long runs: one progress line per group
       tlog("    %s %2d %s: ok=%d err=%d steps %llu/%llu cycles %llu/%llu\n", name, g,
            zex_group_name(img, len, g), r.ok, r.err, (unsigned long long)r.steps,
            (unsigned long long)e->run_steps, (unsigned long long)r.cycles,
@@ -108,8 +116,10 @@ static void run_zex(const zcore* core) {
   int ok = r.complete == 1 && !r.err && r.steps == 904 && r.cycles == 8754;
   verdict(ok, "prelim on %s: %ld instructions, %ld cycles through z80_run (expect 904, 8754)",
           core->name, (long)r.steps, (long)r.cycles);
-  run_zex_groups(core, "zexdoc", zex_zexdoc, zex_zexdoc_end - zex_zexdoc, zexdoc_expect);
-  run_zex_groups(core, "zexall", zex_zexall, zex_zexall_end - zex_zexall, zexall_expect);
+  if (ZEX_SETS & 1)
+    run_zex_groups(core, "zexdoc", zex_zexdoc, zex_zexdoc_end - zex_zexdoc, zexdoc_expect);
+  if (ZEX_SETS & 2)
+    run_zex_groups(core, "zexall", zex_zexall, zex_zexall_end - zex_zexall, zexall_expect);
 }
 
 static int ends_with(const char* s, const char* suf) {
@@ -170,13 +180,16 @@ int main(void) {
   debug_init_usblog();
   dfs_init(DFS_DEFAULT_LOCATION);
   tlog("\nN64Z80 testsuite (M1: asm run loop, C fallback for every opcode)\n");
-  tlog("config: ZDIFF_CASES=%d ZDIFF_SEED=%d ZEX_MAX_STEPS=%d\n", ZDIFF_CASES, ZDIFF_SEED, ZEX_MAX_STEPS);
+  tlog("config: ZDIFF_CASES=%d ZDIFF_SEED=%d ZEX_MAX_STEPS=%d ZEX_SETS=%d ZEX_ONLY=%d\n", ZDIFF_CASES,
+       ZDIFF_SEED, ZEX_MAX_STEPS, ZEX_SETS, ZEX_ONLY);
 
-  run_zdiff();
-  run_traces();
-  bench_core(&REF_core);
-  bench_core(&ASM_core);
-  bench_window_copy();
+  if (!ZEX_ONLY) {
+    run_zdiff();
+    run_traces();
+    bench_core(&REF_core);
+    bench_core(&ASM_core);
+    bench_window_copy();
+  }
   run_zex(&ASM_core);
   verdict(n64z80_fetch_mismatch == 0, "%s: %ld fetch pointer mismatches (%ld)", "ASM rmap mapping",
           (long)n64z80_fetch_mismatch, 0);
