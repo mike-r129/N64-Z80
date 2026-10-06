@@ -334,3 +334,67 @@ M3's exit (<= 0.6 us/instr on the Metal Slug trace) is reached: 0.577 us,
 - samsho2's short trace (11 instructions per run, dominated by EI/OUT/DI
   and run overhead) moves +-3% with any layout change; Metal Slug is the
   metric.
+
+## 2026-10-06 (M4): no C left, and the layout is the performance
+
+The core no longer needs the reference: `N64Z80_C_FALLBACK=0` (the default)
+builds without it, and a table entry without an asm handler is a build
+error. What moved to asm:
+
+- **Interrupt service** (EI delay, NMI, IM 1, IM 2, IM 0). IM 0 executes
+  `int_data` from the bounce buffer as the opcode at PC - 1 followed by the
+  bytes at PC, without counting an instruction; the run is poisoned so its
+  tail returns through `slow_exit`, which sees `n64z80_im0` and resumes at the
+  stop test (the reference services once per instruction). Every EI used to
+  call C: samsho2 -9%.
+- **`z80_step`**: a run with `until = cyc` and no `last_pc`. It costs more
+  than the C step on a step-only loop (226 vs 106 cycles), but mvs64 steps
+  rarely (512 steps per 93k runs on Metal Slug).
+- **Prefix chains** (DD DD, FD ED, ...): a further prefix runs as a new
+  prefix after `cyc_ddfd[op]`, as in the reference. Two reference behaviours
+  the 20k/100k-case differential test then found: a block instruction in a
+  chain repeats from the ED byte, not the first prefix (PC - 2), and LD A,R /
+  LD R,A inside a chain see R one higher per prefix (the reference takes one
+  increment back after each `exec_opcode_ddfd` level).
+- **Straddling instructions** run from a 4-byte bounce buffer (`rLIM = 0`,
+  so the next dispatch maps the PC again: `unbounce`). Wrapping past 0xFFFF
+  is the only sequential pc <= pc0, so bounce and unbounce run the stop
+  test; callbacks inside a bounced instruction keep the bounce (load_state's
+  16-bit PC would hide the wrap). zdiff has a split-mapping mode (odd pages
+  read from a mirror) that makes every page boundary a straddle.
+
+Performance (Metal Slug trace, ares; 577 at M3):
+
+- **Data layout by dcache set is worth more than any instruction trim.** An
+  unlucky position of the dispatch tables against the replay's rmap/RAM cost
+  29% (762 vs 593 ns); now the core's data is an 8 KB-aligned block with the
+  hot part (optab, fdtab, sz53p, cycdd, variables, the save area) in sets
+  0x000-0xAEF, and the owner's per-instruction data belongs in 0xB00-0x1FFF.
+  The callee-saved registers and callback slots moved off the stack into
+  that block (the core is not reentrant), so the caller's stack depth no
+  longer moves them: -2%.
+- **The icache holds only the code the traces run.** Hot (6.5 KB) plus the
+  cold handlers seen in a full profile of the three traces end below 16 KB;
+  everything never seen goes to a third subsection after them, so only it
+  shares lines with the hot block: -2% / samsho2 -11%.
+- **The harness is part of the measurement.** The same core measured 511 or
+  692 ns depending on the testsuite's size, because the replay's code landed
+  on the hot block's lines. The replay's code, state and trace buffer are now
+  pinned (test/icache_pad.S, TRACE_SHIFT); the trace's own placement moves
+  the result by 1-2%. In the game the 68k core evicts far more between
+  slices: the trace bench is the core's cost with a light owner, and M5 must
+  measure in-game.
+- Instruction trims: INC/DEC r and CP flags without the generic add (-1%), a
+  push with one wmap lookup (-1%). Tried and dropped: a fast path for
+  forward JR (no gain), reordering the prefix tables against the owner data
+  (Metal Slug -0.6%, samsho2 +11%).
+- **ares's cost model** (measured): 1 cycle per instruction, 2 per load or
+  store even on a hit, no load-use interlock; a second Fable advisor review
+  put the remaining ~48 cycles at ~37 of instructions (29 in handlers, 5
+  per-run entry/exit, 3.5 port I/O) plus ~12 of cache misses.
+
+Result: **0.501 us/instr** on Metal Slug (C core 1.585 in the same build,
+3.2x), samsho2 0.79. M4's speed exit (<= 0.45) is not reached. PLAN §9
+expected 40-55 cycles for this design (we are at 47); the remaining levers
+are a computed-goto dispatch (~1-2 cycles; needs a free register), a lighter
+port callback (a contract question), and the pre-decoded pages of M6.

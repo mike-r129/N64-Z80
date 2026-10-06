@@ -10,11 +10,11 @@ The emulator is meant to run within a [libdragon](https://github.com/DragonMinde
 application. It is not compatible with other Nintendo 64 development
 environments.
 
-> **Status:** milestones M1-M3 are done: every Z80 opcode has an asm
-> handler and the core is bit-exact (differential test, ZEXDOC/ZEXALL,
-> recorded Metal Slug traces), at 0.58 µs per instruction on the Metal Slug
-> trace, 2.9x the C core. M4 removes the remaining C paths (target 0.45
-> µs). Nothing to integrate into mvs64 before M4. See [PLAN.md](PLAN.md).
+> **Status:** milestones M1-M3 are done and M4's coverage: the core is all
+> asm (no C fallback in the default build) and bit-exact (differential test,
+> ZEXDOC/ZEXALL, recorded Metal Slug traces), at 0.50 µs per instruction on
+> the Metal Slug trace, 3.2x the C core; M4's 0.45 µs target is not reached
+> yet. mvs64 integration (M5) is next. See [PLAN.md](PLAN.md).
 
 ## Features
 
@@ -34,8 +34,47 @@ particular:
 
 ## How to use n64z80 in your emulator
 
-To be written once the core exists (milestone M1). The API contract is in
-[PLAN.md §3](PLAN.md).
+**Files.** `n64z80.h`, `n64z80_offsets.h`, `n64z80.c` and `n64z80_asm.S`,
+plus `n64z80_tables.h`, which `tools/gen_tables.py` generates from the
+reference core's cycle and flag tables (`python3 tools/gen_tables.py
+reference/z80.c > n64z80_tables.h`; ship the generated file if you don't
+vendor the reference). Assemble `n64z80_asm.S` with the directory of the
+generated header on the include path. The core's private data is
+gp-relative (`.sdata`) and it uses `$at` internally; it is not reentrant
+(one CPU per program).
+
+**API.** The struct and the functions are mvs64's `z80.h` with an `n64z80_`
+prefix: `n64z80_init`, `n64z80_run(z, until, &last_pc)`, `n64z80_step`,
+`n64z80_gen_int`, `n64z80_gen_nmi`, with the same behaviour down to the cycle
+stamps of bus accesses and `z80_run`'s stop points ([PLAN.md §3](PLAN.md)).
+One difference: the core sets `wrote` / `wrote_any` itself, so callbacks
+don't need to.
+
+**Memory.** Reads and instruction fetches go through `z->rmap` (`byte at
+addr = *(uint8_t*)(rmap[addr >> 8] + addr)`), writes through `write_byte`.
+`n64z80_set_wmap(wmap)` lets pages whose writes are plain stores (work RAM)
+skip `write_byte`. Callbacks may bank-switch (change the rmap or wmap
+entries), raise or lower interrupts and change `int_data`; the core remaps
+the PC and checks for events after every callback. Before `port_in` /
+`port_out` the whole struct is current; before `write_byte` only `cyc`.
+
+**Speed.** On the Metal Slug sound-driver trace the core runs 0.50 µs per
+Z80 instruction on an N64 (the reference C core 1.59). Most of the
+remaining cost is cache misses, so placement matters as much as code:
+
+* the core's data is one block; with `-DN64Z80_DCACHE_ALIGN` it starts on
+  an 8 KB boundary and its hot part uses dcache sets 0x000-0xAEF. Keep the
+  data your emulator touches on every Z80 instruction (the rmap, the wmap,
+  the Z80 work RAM, the `z80` struct) in sets 0xB00-0x1FFF;
+* the first ~6.5 KB of `.text.n64z80` is the hot code, followed by the
+  handlers real drivers use and then the rest; with `-DN64Z80_ICACHE_ALIGN`
+  the block starts on a 16 KB boundary. Code your emulator runs between and
+  inside `z80_run` calls (the scheduler, port handlers) is best kept off the
+  hot block's icache lines;
+* `n64z80_step` costs about twice a C step: call `z80_run` where you can.
+
+`-DN64Z80_C_FALLBACK=1` links the reference as a fallback for table entries
+without an asm handler (there are none; it is a debugging aid).
 
 ## Testing
 

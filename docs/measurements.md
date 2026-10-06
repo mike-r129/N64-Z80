@@ -65,6 +65,19 @@ Conventions:
 | 2026-10-06 | 8aec49d + 32 instr | ″ | ares | ares cost model, 32 instructions added to the run entry, scan loop (4 instr/run): nop / lw / lw+use | +8.0 / +16.0 / +24.0 cycles/instr (1 / 2 / 3 cycles each) |
 | 2026-10-06 | 9341700 | ″ | ares | cheaper run entry/exit, delay slots filled: Metal Slug / samsho2 / scan loop | 584 -> **577** / 1,001 -> 1,032 ns/instr / 81.4 -> 73.6 cycles/instr |
 | 2026-10-06 | 9341700 | testsuite, defaults (M3) | ares | zdiff REF vs ASM 20,000 / direct-write 5,000; controls; replays; prelim, ZEXDOC and ZEXALL subsets through `z80_run` | 0 / 0 mismatches; MUT1-4 caught; replays clean; ZEX exact |
+| 2026-10-06 | b6a6f9c | `ZEX_SETS=0 ZDIFF_CASES=2000` (timing build) | ares | asm interrupt service: Metal Slug / samsho2 | 577 -> 572 / 1,032 -> 943 ns/instr |
+| 2026-10-06 | befc6fb | ″ | ares | asm `z80_step`, step-only scan loop | 112.7 -> 226 cycles/instr (C step 106); mvs64 steps 512 times per 93k runs |
+| 2026-10-06 | a732df3 | ″ | ares | zdiff split mapping, old core vs bounce buffer | 269 C-fallback instructions in 500 cases -> 0, 0 mismatches |
+| 2026-10-06 | 5fdaf57 | ″ | ares | data layout by dcache set, replay data pinned: Metal Slug / samsho2 | 614 -> 529 / 1,154 -> 906 ns/instr (an unlucky table position: 762) |
+| 2026-10-06 | 28de7bd..85e6eca | testsuite `ZDIFF_CASES=100000 ZDIFF_SEED=2`, then `200000` seed 3 | ares | zdiff REF vs ASM / direct / split | 0 / 0 / 0 mismatches (after the chain and wrap fixes) |
+| 2026-10-06 | 19fd464 | `ZEX_SETS=0 ZDIFF_CASES=2000` | ares | never-run handlers in the rare subsection: Metal Slug / samsho2 | 532 -> 523 / 913 -> 814 ns/instr |
+| 2026-10-06 | 153b423 | ″ | ares | INC/DEC/CP flags | 523 -> 517 ns/instr |
+| 2026-10-06 | 1614054 | ″ | ares | push fast path: Metal Slug / samsho2 | 517 -> 511 / 810 -> 782 ns/instr |
+| 2026-10-06 | 1614054 | `ZEX_SETS=3` vs `0`, same core | ares | Metal Slug, before the harness was pinned | 692 vs 511 ns/instr (the replay's code on the hot block's icache lines) |
+| 2026-10-06 | 126ecb2 | `TRACE_SHIFT` 0-7 KB | ares | Metal Slug / samsho2 by trace placement | 531-544 / 892-929 ns/instr |
+| 2026-10-06 | e3bc6eb | `ZEX_SETS=0` / `=3` | ares | **save area off the stack: Metal Slug** / samsho2 | **501 / 512** / 790 / 835 ns/instr (REF 1,585) |
+| 2026-10-06 | e3bc6eb | `ZEX_ONLY=1 ZEX_SETS=2 ZEX_MAX_STEPS=0`, no C fallback (M4 exit) | ares | **full ZEXALL through `z80_run`** | **67/67 groups exact** (5,764,172,722 instr; steps, cycles, CRC) |
+| 2026-10-06 | e3bc6eb | testsuite, defaults (no C fallback) | ares | init vs reference; zdiff 20,000 / direct 5,000 / split 5,000; controls; replays; prelim, ZEXDOC, ZEXALL subsets | all PASS; Metal Slug 512, samsho2 835 ns/instr (REF 1,598 / 1,902) |
 
 ## Notes on the rows
 
@@ -111,3 +124,6 @@ Conventions:
   core linked last on a 16 KB boundary; before that, any core edit moved the
   harness code and shifted every timing (REF included) by up to 15%. Only
   compare rows built with the same test knobs.
+- **2026-10-06, M4.** From 126ecb2 on, the replay's code, state and traces
+  are pinned too (test/icache_pad.S, TRACE_SHIFT): builds with different
+  test knobs then agree within ~2% (they differed by up to 35% before).
