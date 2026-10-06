@@ -119,6 +119,12 @@ n64z80_prof_cnt: .space 4 * PROF_KEYS
     .section .text.n64z80, "ax", @progbits
     .subsection 1
 .endm
+# Code that rarely runs (fallbacks, interrupt service, bounce buffer) goes
+# last, so edits there do not move the cold handlers in the icache.
+.macro RARE
+    .section .text.n64z80, "ax", @progbits
+    .subsection 2
+.endm
 .macro PLACE name
   .ifdef HOT_\name
     HOT
@@ -381,6 +387,7 @@ se_halted:
 se_test:
     bgez  rCYC, stop
      subu t0, rPC, rBIAS
+    andi  t0, t0, 0xFFFF            # past 0xFFFF after a bounce
     sltu  t1, rPC0, t0
     beqz  t1, stop
      nop
@@ -411,6 +418,7 @@ pre_halt:
      lw   t0, %gp_rel(n64z80_cbase)(gp)
     # HALT: a 4-cycle NOP in place (cyc_00[0x00]; R via rN), then its tail.
     subu  rPC0, rPC, rBIAS
+    andi  rPC0, rPC0, 0xFFFF
     addiu rN, rN, 1
     b     slow_exit
      addiu rCYC, rCYC, 4
@@ -424,22 +432,21 @@ dispatch_nocyc:
 # rPC reached rLIM: rPC is in the last 4 bytes of a page (the instruction
 # before was in the fast path, at most 4 bytes long). Extend rLIM if the
 # next page continues the same host region (never past 0xFFFF), else run
-# this instruction in the fallback.
+# this instruction from a copy (bounce). After an instruction run from the
+# copy (rLIM = 0), map the PC again (unbounce).
 refetch:
-    subu  t0, rPC, rBIAS
+    beqz  rLIM, unbounce             # only a bounce sets rLIM = 0
+     subu t0, rPC, rBIAS
     srl   t0, t0, 8
     xori  t1, t0, 0xFF
-    beqz  t1, 1f
+    beqz  t1, bounce
      sll  t0, t0, 2
     addu  t1, rRMAP, t0
     lw    t1, 4(t1)
-    bne   t1, rBIAS, 1f
+    bne   t1, rBIAS, bounce
      nop
     b     dispatch_nocyc
      addiu rLIM, rLIM, 256
-1:  subu  rPC0, rPC, rBIAS
-    b     op_fallback
-     addiu rN, rN, 1
 
 # EI delay (t0 = iff_delay > 0): count it down; at 0, IFF1 = IFF2 = 1.
 svc_delay:
@@ -459,7 +466,7 @@ svc_delay:
 # The fallback re-executes the instruction's R increments, so give back the
 # one dispatch counted before materializing R.
     .balign 32
-    COLD
+    RARE
     .balign 4
 op_fallback:
     lw    t1, %gp_rel(n64z80_nfallback)(gp)
@@ -757,6 +764,7 @@ wr8_cb:
     sw    t7, F_WR+24(sp)
     sw    t8, F_WR+28(sp)
     subu  t9, rPC, rBIAS
+    andi  t9, t9, 0xFFFF
     sw    t9, F_WR+32(sp)
     sw    rRB, F_WR+36(sp)
     lw    t9, %gp_rel(n64z80_cbase)(gp)
@@ -1711,7 +1719,55 @@ OP 36                           # ld (hl),n
 # covers; a chain (DD DD, FD ED, ...) repeats the check at each further
 # prefix (ddfd_chain).
 
-    COLD
+    RARE
+# An instruction that straddles a mapping boundary: copy it, run it from the
+# copy (the limit check is skipped: it fails there).
+bounce:
+    subu  t0, rPC, rBIAS
+    bal   bounce_fill
+     andi t0, t0, 0xFFFF
+    lbu   t0, 0(rPC)
+    sll   t0, t0, 2
+    addu  t0, t0, gp
+    lw    t0, %gp_rel(n64z80_optab)(t0)
+    subu  rPC0, rPC, rBIAS
+    jr    t0
+     addiu rN, rN, 1
+
+unbounce:
+    subu  t0, rPC, rBIAS
+    andi  t0, t0, 0xFFFF
+    REMAP
+    b     dispatch_nocyc
+     nop
+
+# Copy the 4 bytes at Z80 address t0 (wrapping at 0xFFFF) through the rmap
+# to n64z80_bbuf and fetch from there: rBIAS = bbuf - t0 (so rPC - rBIAS is
+# still the Z80 address, up to 0x10002 past a wrap: users mask it), rPC =
+# bbuf, rLIM = 0 so every dispatch from the copy refetches. bal; clobbers
+# t1-t4.
+bounce_fill:
+    addiu t4, gp, %gp_rel(n64z80_bbuf)
+    move  t3, t0
+    READ8 t1, t3, t2
+    sb    t1, 0(t4)
+    addiu t3, t3, 1
+    andi  t3, t3, 0xFFFF
+    READ8 t1, t3, t2
+    sb    t1, 1(t4)
+    addiu t3, t3, 1
+    andi  t3, t3, 0xFFFF
+    READ8 t1, t3, t2
+    sb    t1, 2(t4)
+    addiu t3, t3, 1
+    andi  t3, t3, 0xFFFF
+    READ8 t1, t3, t2
+    sb    t1, 3(t4)
+    subu  rBIAS, t4, t0
+    move  rPC, t4
+    jr    ra
+     move rLIM, zero
+
 # NMI: no IFF2 change, +11, call 0x66.
 svc_nmi:
     sb    zero, N64Z80_OFF_NMI_PENDING(rZ)
@@ -1816,14 +1872,17 @@ ddfd_base:
 
 # A prefix after DD/FD (DD, ED, FD; exec_opcode_ddfd runs it as the
 # unprefixed opcode, i.e. as a new prefix): a chain. Its own handler reads
-# up to 4 bytes from rPC, so the limit check is repeated here.
-    COLD
+# up to 4 bytes from rPC, so the limit check is repeated here; past the
+# limit, the rest runs from a copy.
+    RARE
 ddfd_chain:
     sltu  t1, rPC, rLIM
     bnez  t1, ddfd_base
-     nop
-    b     pfx_fallback
-     nop
+     subu t2, rPC, rBIAS             # (t0 is the opcode on the taken path)
+    bal   bounce_fill
+     andi t0, t2, 0xFFFF
+    b     ddfd_base
+     lbu  t0, 0(rPC)
     HOT
 
 # Shared tails: rPC is at the opcode byte after the prefix; skip it and n-1
@@ -3594,3 +3653,7 @@ n64z80_fdtab:
 
 # cyc_ddfd, for ddfd_base.
 n64z80_cycdd:   .byte N64Z80_CYCDD
+
+# Bounce buffer: a copy of an instruction that straddles a mapping boundary.
+    .balign 4
+n64z80_bbuf:    .word 0
