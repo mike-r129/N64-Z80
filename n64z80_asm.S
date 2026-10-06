@@ -883,9 +883,27 @@ wr8_cb:
 # Push t4 (16-bit) as the reference's pushw: SP -= 2, low byte at SP, high
 # byte at SP+1 (bal). Keeps t2-t6; clobbers t0, t1, t7, t9.
 push_t4:
-    move  t7, ra
     addiu rSP, rSP, -2
     andi  rSP, rSP, 0xFFFF
+    # Both bytes in one page the wmap stores directly: one lookup.
+    lw    t9, %gp_rel(n64z80_wmap)(gp)
+    andi  t1, rSP, 0xFF
+    xori  t1, t1, 0xFF
+    beqz  t1, push_slow             # SP + 1 is on the next page
+     srl  t0, rSP, 8
+    beqz  t9, push_slow
+     sll  t0, t0, 2
+    addu  t0, t0, t9
+    lw    t0, 0(t0)
+    beqz  t0, push_slow
+     addu t0, t0, rSP
+    sw    rN, %gp_rel(n64z80_lastw)(gp)
+    sb    t4, 0(t0)
+    srl   t1, t4, 8
+    jr    ra
+     sb   t1, 1(t0)
+push_slow:
+    move  t7, ra
     move  t0, rSP
     bal   wr8
      andi t1, t4, 0xFF
