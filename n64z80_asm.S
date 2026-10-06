@@ -66,7 +66,19 @@
 
 # ---------------------------------------------------------------------------
 # Private state (gp-relative). The z80 struct itself is the owner's.
+#
+# Data layout, by dcache set (8 KB, 16-byte lines). Subsection 0 holds the
+# data nearly every instruction touches: optab (0x000), fdtab (0x400), sz53p
+# (0x800), cycdd (0x900); subsection 1 these variables (0xA00); subsection 2
+# the tables only some prefixed instructions use (cbtab, xcbtab, edtab,
+# ddtab) and the bounce buffer, from about 0xA40. With N64Z80_DCACHE_ALIGN
+# the block starts on an 8 KB boundary, so those offsets are the sets, and
+# the owner's per-instruction data (rmap, wmap, Z80 RAM, the struct) belongs
+# in sets 0xA40-0x1FFF, clear of the hot part. Without the alignment the
+# block is 16-byte aligned: adding a variable never regroups table entries
+# into different lines (an 8-byte shift once cost 2%).
     .section .sdata
+    .subsection 1
     .balign 4
     .globl n64z80_insn, n64z80_lastw
 n64z80_until:   .word 0     # the run's `until`
@@ -87,8 +99,6 @@ n64z80_prof_start: .word 0  # COP0 Count at its dispatch
 n64z80_prof_key:   .word 0  # its key
 #endif
 
-# S, Z, Y, X and P/V of each result byte (the reference's table).
-n64z80_sz53p:   .byte N64Z80_SZ53P
 
 #ifdef N64Z80_PROF
 # Profiling build (make PROF=1), sampling: every 32nd dispatch starts timing
@@ -3603,7 +3613,12 @@ EDOP \op
 # one runs in the C fallback (prefixed ones through pfx_fallback). .ifdef
 # only sees labels defined above it, so the tables must stay at the end.
     .section .sdata
-    .balign 4
+    .subsection 0
+#ifdef N64Z80_DCACHE_ALIGN
+    .balign 8192
+#else
+    .balign 16
+#endif
 
 n64z80_optab:
     .irp hi, 0,1,2,3,4,5,6,7,8,9,A,B,C,D,E,F
@@ -3616,6 +3631,8 @@ n64z80_optab:
     .endr
     .endr
 
+    .subsection 2
+    .balign 16
 n64z80_cbtab:
     .irp hi, 0,1,2,3,4,5,6,7,8,9,A,B,C,D,E,F
     .irp lo, 0,1,2,3,4,5,6,7,8,9,A,B,C,D,E,F
@@ -3686,12 +3703,17 @@ n64z80_edtab:
 .endm
 n64z80_ddtab:
     DDFD_TABLE DD
-n64z80_fdtab:
-    DDFD_TABLE FD
-
-# cyc_ddfd, for ddfd_base.
-n64z80_cycdd:   .byte N64Z80_CYCDD
 
 # Bounce buffer: a copy of an instruction that straddles a mapping boundary.
     .balign 4
 n64z80_bbuf:    .word 0
+
+    .subsection 0
+n64z80_fdtab:
+    DDFD_TABLE FD
+
+# S, Z, Y, X and P/V of each result byte (the reference's table).
+n64z80_sz53p:   .byte N64Z80_SZ53P
+
+# cyc_ddfd, for ddfd_base.
+n64z80_cycdd:   .byte N64Z80_CYCDD

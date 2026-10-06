@@ -23,11 +23,17 @@ static uint32_t now32(void) { return 0; }
 static const zcore* core;
 static z80* cpu;
 static const uint8_t *rom, *buf, *t, *tend;   // t = trace cursor
-static uint8_t ram[0x800] __attribute__((aligned(16)));
 static uint32_t bank_off[4];
 static const uint32_t win_base[4] = { 0x8000, 0xC000, 0xE000, 0xF000 };
 static const uint32_t win_size[4] = { 0x4000, 0x2000, 0x1000, 0x0800 };
-static uintptr_t rmap[256], wmap[256];
+// The owner data the core touches on every instruction, at a fixed dcache
+// position: sets 0xA40 up, clear of the core's hot tables (n64z80_asm.S,
+// N64Z80_DCACHE_ALIGN), as recommended for mvs64.
+static struct {
+  uint8_t pad[0xA40];
+  uint8_t ram[0x800];
+  uintptr_t rmap[256], wmap[256];
+} hot __attribute__((aligned(8192)));
 static replay_result res;
 static int maxbad;
 
@@ -38,16 +44,16 @@ static void fail(const char* what) {
 }
 
 static void map_fill(unsigned lo, unsigned hi, const uint8_t* base) {
-  for (unsigned p = lo; p < hi; p++) rmap[p] = (uintptr_t)base - ((uintptr_t)lo << 8);
+  for (unsigned p = lo; p < hi; p++) hot.rmap[p] = (uintptr_t)base - ((uintptr_t)lo << 8);
 }
 static void map_window(int w) {
   map_fill(win_base[w] >> 8, (win_base[w] + win_size[w]) >> 8, rom + bank_off[w]);
 }
 
-static uint8_t rd(void* ud, uint16_t a) { (void)ud; return *(const uint8_t*)(rmap[a >> 8] + a); }
+static uint8_t rd(void* ud, uint16_t a) { (void)ud; return *(const uint8_t*)(hot.rmap[a >> 8] + a); }
 static void wr(void* ud, uint16_t a, uint8_t v) {
   (void)ud;
-  if (a >= 0xF800) ram[a - 0xF800] = v;
+  if (a >= 0xF800) hot.ram[a - 0xF800] = v;
   cpu->wrote = 1;
 }
 
@@ -97,18 +103,18 @@ replay_result replay(const zcore* c, const uint8_t* trace, size_t len, int maxpr
   t += 12;
   core->init(cpu);
   z80t_state_load(cpu, t); t += Z80T_STATE_SIZE;
-  memcpy(ram, t, 0x800); t += 0x800;
+  memcpy(hot.ram, t, 0x800); t += 0x800;
   for (int w = 0; w < 4; w++) { bank_off[w] = z80t_get32(t); t += 4; }
   uint32_t rom_size = z80t_get32(t); t += 4;
   rom = t; t += rom_size;
   map_fill(0x00, 0x80, rom);
   for (int w = 0; w < 4; w++) map_window(w);
-  map_fill(0xF8, 0x100, ram);
-  cpu->rmap = rmap; cpu->read_byte = rd; cpu->write_byte = wr;
+  map_fill(0xF8, 0x100, hot.ram);
+  cpu->rmap = hot.rmap; cpu->read_byte = rd; cpu->write_byte = wr;
   cpu->port_in = pin; cpu->port_out = pout; cpu->userdata = NULL;
   if (core->set_wmap) {
-    for (int p = 0; p < 256; p++) wmap[p] = p >= 0xF8 ? (uintptr_t)ram - 0xF800 : 0;
-    core->set_wmap(wmap);
+    for (int p = 0; p < 256; p++) hot.wmap[p] = p >= 0xF8 ? (uintptr_t)hot.ram - 0xF800 : 0;
+    core->set_wmap(hot.wmap);
   }
 
   while (t < tend && !res.ended) {
@@ -141,13 +147,13 @@ replay_result replay(const zcore* c, const uint8_t* trace, size_t len, int maxpr
     case Z80T_SETR: cpu->r = *t++; break;
     case Z80T_BANK: bank_off[t[0] & 3] = z80t_get32(t + 1); map_window(t[0] & 3); t += 5; break;
     case Z80T_RAMCRC:
-      if (z80t_get32(t) != z80t_crc32(ram, 0x800)) fail("RAM CRC differs");
+      if (z80t_get32(t) != z80t_crc32(hot.ram, 0x800)) fail("RAM CRC differs");
       t += 4; break;
     case Z80T_END: {
       uint8_t s[Z80T_STATE_SIZE];
       z80t_state_save(cpu, s);
       if (memcmp(s, t, Z80T_STATE_SIZE)) fail("END state differs");
-      if (memcmp(ram, t + Z80T_STATE_SIZE, 0x800)) fail("END RAM differs");
+      if (memcmp(hot.ram, t + Z80T_STATE_SIZE, 0x800)) fail("END RAM differs");
       t += Z80T_STATE_SIZE + 0x800; res.ended = 1;
     } break;
     default:

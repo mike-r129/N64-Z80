@@ -46,6 +46,10 @@ asm := test/zex_roms.S
 OBJS := $(src:%.c=$(BUILD_DIR)/%.o) $(asm:%.S=$(BUILD_DIR)/%.o) $(CORES:%=$(BUILD_DIR)/zcore_%.o) \
 	$(BUILD_DIR)/n64z80.o $(BUILD_DIR)/n64z80_asm.o
 N64_ASFLAGS += -DN64Z80_ICACHE_ALIGN
+# Likewise the core's data starts on an 8 KB boundary (the dcache size;
+# N64Z80_DCACHE_ALIGN), and test/replay.c pins the owner's data next to it
+# as the design notes recommend for mvs64.
+N64_ASFLAGS += -DN64Z80_DCACHE_ALIGN
 
 N64_CFLAGS += -I. -Itest -Ireference -I$(BUILD_DIR)
 N64_ASFLAGS += -I. -I$(BUILD_DIR)
