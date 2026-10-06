@@ -355,7 +355,10 @@ number in `docs/measurements.md`)
   - For a prefixed instruction whose target isn't implemented yet, rewind to
     the prefix byte and fall back for the whole instruction.
   - Exit: differential clean; ZEXALL clean through `z80_run`.
-- **M2: top 20 opcodes in asm** (~70% of the Metal Slug mix).
+- **M2: top 20 opcodes in asm** (~70% of the Metal Slug mix). *Done
+  2026-10-06, and beyond: every opcode has an asm handler; differential,
+  replays and ZEX clean; Metal Slug trace 0.65 µs/instr vs 1.63 for the C
+  core in the same build (2.5×).*
   - Exit: differential clean; measurable speedup on the trace.
 - **M3: top ~60 opcodes plus FD CB `BIT`** (~95%), with the hot set inside
   the §4.3 icache budget.
