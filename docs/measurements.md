@@ -51,7 +51,7 @@ Conventions:
 | 2026-10-05 | 7fbb914 | ″ | ares | replay `samsho2_30s_5s`: REF / ASM (M1) | 2,324 / 4,416 ns/instr |
 | 2026-10-05 | 7fbb914 | ″ | ares | scan loop: REF `z80_run` / ASM `n64z80_run` (M1) / ASM `n64z80_step` (C) | 1,080 / 3,361 / 1,174 ns/instr |
 | 2026-10-05 | 7fbb914 | ″ | ares | ASM ZEX subset through `z80_run` (75.7M instr) | 2,978 ns/instr |
-| 2026-10-06 | 7fbb914 | testsuite `ZEX_ONLY=1 ZEX_SETS=2 ZEX_MAX_STEPS=0` (M1) | ares | **full ZEXALL on ASM through `z80_run`**, all 67 groups (5,764,172,722 instr) | **67/67 exact** (steps, cycles, CRC); 18,447,860 ms N64 time (3.2 µs/instr) |
+| 2026-10-06 | b8d8ce9 | testsuite `ZEX_ONLY=1 ZEX_SETS=2 ZEX_MAX_STEPS=0` (M1) | ares | **full ZEXALL on ASM through `z80_run`**, all 67 groups (5,764,172,722 instr) | **67/67 exact** (steps, cycles, CRC); 18,447,860 ms N64 time (3.2 µs/instr) |
 
 ## Notes on the rows
 
