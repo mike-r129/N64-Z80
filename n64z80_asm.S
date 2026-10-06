@@ -877,8 +877,8 @@ OP \op
     bal   inc_core
      CHARGE \op
     SETR  \r, t2
-    addiu rPC, rPC, 1
-    DISPATCH
+    b     dispatch
+     addiu rPC, rPC, 1
 .endm
 
 .macro DEC_R op, r
@@ -887,8 +887,8 @@ OP \op
     bal   dec_core
      CHARGE \op
     SETR  \r, t2
-    addiu rPC, rPC, 1
-    DISPATCH
+    b     dispatch
+     addiu rPC, rPC, 1
 .endm
 
 .macro LD_RR_NN op, rr
@@ -958,8 +958,8 @@ OP \op
     CHARGE \op
     BCOND \set, jr_taken
      lb   t1, 1(rPC)
-    addiu rPC, rPC, 2
-    DISPATCH
+    b     dispatch
+     addiu rPC, rPC, 2
 .endm
 
 # JP cc,nn (cond_jump): WZ = nn taken or not.
@@ -970,8 +970,8 @@ OP \op
     sh    t0, N64Z80_OFF_MEM_PTR(rZ)
     BCOND \set, jp_to
      CHARGE \op
-    addiu rPC, rPC, 3
-    DISPATCH
+    b     dispatch
+     addiu rPC, rPC, 3
 .endm
 
 # CALL cc,nn (cond_call): push and +7 if taken; WZ = nn either way.
@@ -982,8 +982,8 @@ OP \op
     BCOND \set, call_taken
      CHARGE \op
     sh    t5, N64Z80_OFF_MEM_PTR(rZ)
-    addiu rPC, rPC, 3
-    DISPATCH
+    b     dispatch
+     addiu rPC, rPC, 3
 .endm
 
 .macro RET_CC op, mask, set
@@ -991,8 +991,8 @@ OP \op
     andi  t3, rF, \mask
     BCOND \set, ret_taken
      CHARGE \op
-    addiu rPC, rPC, 1
-    DISPATCH
+    b     dispatch
+     addiu rPC, rPC, 1
 .endm
 
 # RST p: call(z, p): push the next PC, PC = WZ = p.
@@ -1012,8 +1012,8 @@ OP \op
     CHARGE \op
     bal   push_t4
      move t4, \rr
-    addiu rPC, rPC, 1
-    DISPATCH
+    b     dispatch
+     addiu rPC, rPC, 1
 .endm
 
 .macro POP_RR op, rr
@@ -1249,8 +1249,8 @@ OP \op
 
 OP 00                           # nop
     addiu rPC, rPC, 1
-    CHARGE 00
-    DISPATCH
+    b     dispatch
+     CHARGE 00
 
 OP 02                           # ld (bc),a: WZ = A << 8 | (BC + 1) & 0xFF
     CHARGE 02
@@ -1283,16 +1283,16 @@ OP 0A                           # ld a,(bc): WZ = BC + 1
     addiu t1, rBC, 1
     sh    t1, N64Z80_OFF_MEM_PTR(rZ)
     addiu rPC, rPC, 1
-    CHARGE 0A
-    DISPATCH
+    b     dispatch
+     CHARGE 0A
 
 OP 1A                           # ld a,(de)
     READ8 rA, rDE, t0
     addiu t1, rDE, 1
     sh    t1, N64Z80_OFF_MEM_PTR(rZ)
     addiu rPC, rPC, 1
-    CHARGE 1A
-    DISPATCH
+    b     dispatch
+     CHARGE 1A
 
 OP 07                           # rlca
     srl   t0, rA, 7
@@ -1304,8 +1304,8 @@ OP 07                           # rlca
     andi  t1, rA, 0x28
     or    rF, rF, t1
     addiu rPC, rPC, 1
-    CHARGE 07
-    DISPATCH
+    b     dispatch
+     CHARGE 07
 
 OP 0F                           # rrca
     andi  t0, rA, 1
@@ -1317,8 +1317,8 @@ OP 0F                           # rrca
     andi  t1, rA, 0x28
     or    rF, rF, t1
     addiu rPC, rPC, 1
-    CHARGE 0F
-    DISPATCH
+    b     dispatch
+     CHARGE 0F
 
 OP 17                           # rla
     andi  t2, rF, 1
@@ -1331,8 +1331,8 @@ OP 17                           # rla
     andi  t1, rA, 0x28
     or    rF, rF, t1
     addiu rPC, rPC, 1
-    CHARGE 17
-    DISPATCH
+    b     dispatch
+     CHARGE 17
 
 OP 1F                           # rra
     andi  t2, rF, 1
@@ -1345,8 +1345,8 @@ OP 1F                           # rra
     andi  t1, rA, 0x28
     or    rF, rF, t1
     addiu rPC, rPC, 1
-    CHARGE 1F
-    DISPATCH
+    b     dispatch
+     CHARGE 1F
 
 OP 2F                           # cpl
     xori  rA, rA, 0xFF
@@ -1355,8 +1355,8 @@ OP 2F                           # cpl
     andi  t1, rA, 0x28
     or    rF, rF, t1
     addiu rPC, rPC, 1
-    CHARGE 2F
-    DISPATCH
+    b     dispatch
+     CHARGE 2F
 
 OP 37                           # scf
     andi  rF, rF, 0xC4
@@ -1364,8 +1364,8 @@ OP 37                           # scf
     andi  t1, rA, 0x28
     or    rF, rF, t1
     addiu rPC, rPC, 1
-    CHARGE 37
-    DISPATCH
+    b     dispatch
+     CHARGE 37
 
 OP 3F                           # ccf: H = old C, C = !C
     andi  t0, rF, 1
@@ -1377,8 +1377,8 @@ OP 3F                           # ccf: H = old C, C = !C
     andi  t1, rA, 0x28
     or    rF, rF, t1
     addiu rPC, rPC, 1
-    CHARGE 3F
-    DISPATCH
+    b     dispatch
+     CHARGE 3F
 
 OP 08                           # ex af,af'
     lbu   t0, N64Z80_OFF_A_(rZ)
@@ -1388,8 +1388,8 @@ OP 08                           # ex af,af'
     move  rA, t0
     move  rF, t1
     addiu rPC, rPC, 1
-    CHARGE 08
-    DISPATCH
+    b     dispatch
+     CHARGE 08
 
 OP D9                           # exx
     lbu   t0, N64Z80_OFF_B_(rZ)
@@ -1414,22 +1414,22 @@ OP D9                           # exx
     sll   t0, t0, 8
     or    rHL, t0, t1
     addiu rPC, rPC, 1
-    CHARGE D9
-    DISPATCH
+    b     dispatch
+     CHARGE D9
 
 OP EB                           # ex de,hl
     move  t0, rDE
     move  rDE, rHL
     move  rHL, t0
     addiu rPC, rPC, 1
-    CHARGE EB
-    DISPATCH
+    b     dispatch
+     CHARGE EB
 
 OP F9                           # ld sp,hl
     move  rSP, rHL
     addiu rPC, rPC, 1
-    CHARGE F9
-    DISPATCH
+    b     dispatch
+     CHARGE F9
 
 OP 10                           # djnz: --B, cond_jr
     addiu rBC, rBC, -0x100
@@ -1438,8 +1438,8 @@ OP 10                           # djnz: --B, cond_jr
     CHARGE 10
     bnez  t3, jr_taken
      lb   t1, 1(rPC)
-    addiu rPC, rPC, 2
-    DISPATCH
+    b     dispatch
+     addiu rPC, rPC, 2
 
 OP 18                           # jr e: no WZ
     lb    t1, 1(rPC)
@@ -1482,16 +1482,16 @@ OP F5                           # push af
     sll   t4, rA, 8
     bal   push_t4
      or   t4, t4, rF
-    addiu rPC, rPC, 1
-    DISPATCH
+    b     dispatch
+     addiu rPC, rPC, 1
 
 OP F1                           # pop af
     POP16 t0, t1, t2
     srl   rA, t0, 8
     andi  rF, t0, 0xFF
     addiu rPC, rPC, 1
-    CHARGE F1
-    DISPATCH
+    b     dispatch
+     CHARGE F1
 
 OP E3                           # ex (sp),hl: read (SP), write L then H, WZ = HL
     CHARGE E3
@@ -1510,8 +1510,8 @@ OP E3                           # ex (sp),hl: read (SP), write L then H, WZ = HL
      srl  t1, rHL, 8
     move  rHL, t5
     sh    t5, N64Z80_OFF_MEM_PTR(rZ)
-    addiu rPC, rPC, 1
-    DISPATCH
+    b     dispatch
+     addiu rPC, rPC, 1
 
 OP 22                           # ld (nn),hl: L at nn, H at nn+1, WZ = nn + 1
     CHARGE 22
@@ -1525,8 +1525,8 @@ OP 22                           # ld (nn),hl: L at nn, H at nn+1, WZ = nn + 1
     bal   wr8
      srl  t1, rHL, 8
     sh    t5, N64Z80_OFF_MEM_PTR(rZ)
-    addiu rPC, rPC, 3
-    DISPATCH
+    b     dispatch
+     addiu rPC, rPC, 3
 
 OP 2A                           # ld hl,(nn): WZ = nn + 1
     FETCH16 t0, t1
@@ -1538,8 +1538,8 @@ OP 2A                           # ld hl,(nn): WZ = nn + 1
     sll   t3, t3, 8
     or    rHL, t2, t3
     addiu rPC, rPC, 3
-    CHARGE 2A
-    DISPATCH
+    b     dispatch
+     CHARGE 2A
 
 OP 32                           # ld (nn),a: WZ = A << 8 | (nn + 1) & 0xFF
     CHARGE 32
@@ -1552,8 +1552,8 @@ OP 32                           # ld (nn),a: WZ = A << 8 | (nn + 1) & 0xFF
     sll   t1, rA, 8
     or    t5, t5, t1
     sh    t5, N64Z80_OFF_MEM_PTR(rZ)
-    addiu rPC, rPC, 3
-    DISPATCH
+    b     dispatch
+     addiu rPC, rPC, 3
 
 OP 3A                           # ld a,(nn): WZ = nn + 1
     FETCH16 t0, t1
@@ -1561,8 +1561,8 @@ OP 3A                           # ld a,(nn): WZ = nn + 1
     addiu t0, t0, 1
     sh    t0, N64Z80_OFF_MEM_PTR(rZ)
     addiu rPC, rPC, 3
-    CHARGE 3A
-    DISPATCH
+    b     dispatch
+     CHARGE 3A
 
 OP 34                           # inc (hl)
     CHARGE 34
@@ -1658,14 +1658,14 @@ ddfd_base:
 # Shared tails: rPC is at the opcode byte after the prefix; skip it and n-1
 # more bytes, next instruction.
 next1:
-    addiu rPC, rPC, 1
-    DISPATCH
+    b     dispatch
+     addiu rPC, rPC, 1
 next2:
-    addiu rPC, rPC, 2
-    DISPATCH
+    b     dispatch
+     addiu rPC, rPC, 2
 next3:
-    addiu rPC, rPC, 3
-    DISPATCH
+    b     dispatch
+     addiu rPC, rPC, 3
 
 # Rotate/shift cores (cb_rlc ... cb_srl): t0 = byte -> t2 = result,
 # F = sz53p[result] | C (bal). Clobbers t1, t3.
@@ -1764,8 +1764,8 @@ CBOP \op
      nop
     SETR  \r, t2
   .endif
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 .endm
 
 .macro CB_BIT op, y, r
@@ -1788,8 +1788,8 @@ CBOP \op
     bal   wr8
      move t0, rHL
   .endif
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 .endm
 
 # RES (set = 0) / SET (set = 1) bit y of r.
@@ -1813,8 +1813,8 @@ CBOP \op
   .else
     SETR  \r, t2
   .endif
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 .endm
 
 # ---------------------------------------------------------------------------
@@ -1854,8 +1854,8 @@ op_XC_\o7:
     srl   t3, t5, 8
     BITFLAGS
     addiu rCYC, rCYC, 20
-    b     next3
-     nop
+    b     dispatch
+     addiu rPC, rPC, 3
 .endm
 
 .macro XC_RES_SET op, set, y, r
@@ -1881,8 +1881,8 @@ xc_write:
     bal   wr8
      move t1, t2
     addiu rCYC, rCYC, 23
-    b     next3
-     nop
+    b     dispatch
+     addiu rPC, rPC, 3
 
 # ---------------------------------------------------------------------------
 # DD/FD xx index-register forms (exec_opcode_ddfd), instantiated for IX and
@@ -1909,8 +1909,8 @@ IZOP \p, \op
     IZADDR t0, \ix
     READ8 t1, t0, t2
     SETR  \r, t1
-    b     next2
-     nop
+    b     dispatch
+     addiu rPC, rPC, 2
 .endm
 
 .macro IZ_LD_D_R p, ix, op, r      # ld (iz+d),r
@@ -1919,8 +1919,8 @@ IZOP \p, \op
     GETR  t1, \r
     bal   wr8
      nop
-    b     next2
-     nop
+    b     dispatch
+     addiu rPC, rPC, 2
 .endm
 
 .macro IZ_ALU_D p, ix, op, tail    # alu a,(iz+d)
@@ -1942,24 +1942,24 @@ IZOP \p, \op
 IZOP \p, \op
     lbu   t0, \ix+\half(rZ)
     SETR  \r, t0
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 .endm
 
 .macro IZ_LD_B_R p, ix, op, half, r     # ld izh / izl,r
 IZOP \p, \op
     GETR  t0, \r
     sb    t0, \ix+\half(rZ)
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 .endm
 
 .macro IZ_LD_B_B p, ix, op, dst, src    # ld izh/izl,izh/izl
 IZOP \p, \op
     lbu   t0, \ix+\src(rZ)
     sb    t0, \ix+\dst(rZ)
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 .endm
 
 .macro IZ_INCDEC_B p, ix, op, core, half
@@ -1968,16 +1968,16 @@ IZOP \p, \op
     bal   \core
      nop
     sb    t2, \ix+\half(rZ)
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 .endm
 
 .macro IZ_LD_B_N p, ix, op, half        # ld izh / izl,n
 IZOP \p, \op
     lbu   t0, 1(rPC)
     sb    t0, \ix+\half(rZ)
-    b     next2
-     nop
+    b     dispatch
+     addiu rPC, rPC, 2
 .endm
 
 .macro IZ_INCDEC_D p, ix, op, core      # inc / dec (iz+d)
@@ -1989,8 +1989,8 @@ IZOP \p, \op
     move  t0, a1
     bal   wr8
      move t1, t2
-    b     next2
-     nop
+    b     dispatch
+     addiu rPC, rPC, 2
 .endm
 
 # add iz,rr (addiz): S Z P kept, H C Y X from the high byte, N = 0,
@@ -2018,8 +2018,8 @@ IZOP \p, \op
     or    rF, rF, t3
     or    rF, rF, t4
     sh    t0, \ix(rZ)
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 .endm
 
 .macro IZ_FAMILY p, ix
@@ -2103,14 +2103,14 @@ IZOP \p, 36                       # ld (iz+d),n
     lbu   t1, 2(rPC)
     bal   wr8
      nop
-    b     next3
-     nop
+    b     dispatch
+     addiu rPC, rPC, 3
 
 IZOP \p, 21                       # ld iz,nn
     FETCH16 t0, t1
     sh    t0, \ix(rZ)
-    b     next3
-     nop
+    b     dispatch
+     addiu rPC, rPC, 3
 
 IZOP \p, 2A                       # ld iz,(nn): no WZ
     FETCH16 t0, t1
@@ -2120,8 +2120,8 @@ IZOP \p, 2A                       # ld iz,(nn): no WZ
     READ8 t3, t0, t1
     sb    t2, \ix+1(rZ)
     sb    t3, \ix(rZ)
-    b     next3
-     nop
+    b     dispatch
+     addiu rPC, rPC, 3
 
 IZOP \p, 22                       # ld (nn),iz: no WZ
     FETCH16 t5, t1
@@ -2133,34 +2133,34 @@ IZOP \p, 22                       # ld (nn),iz: no WZ
     andi  t0, t0, 0xFFFF
     bal   wr8
      srl  t1, t4, 8
-    b     next3
-     nop
+    b     dispatch
+     addiu rPC, rPC, 3
 
 IZOP \p, 23                       # inc iz
     lhu   t0, \ix(rZ)
     addiu t0, t0, 1
     sh    t0, \ix(rZ)
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 
 IZOP \p, 2B                       # dec iz
     lhu   t0, \ix(rZ)
     addiu t0, t0, -1
     sh    t0, \ix(rZ)
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 
 IZOP \p, E1                       # pop iz
     POP16 t0, t1, t2
     sh    t0, \ix(rZ)
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 
 IZOP \p, E5                       # push iz
     bal   push_t4
      lhu  t4, \ix(rZ)
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 
 IZOP \p, E3                       # ex (sp),iz: WZ = the popped value
     READ8 t5, rSP, t0
@@ -2179,8 +2179,8 @@ IZOP \p, E3                       # ex (sp),iz: WZ = the popped value
      srl  t1, t4, 8
     sh    t5, \ix(rZ)
     sh    t5, N64Z80_OFF_MEM_PTR(rZ)
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 
 IZOP \p, E9                       # jp (iz): jump() sets WZ
     lhu   t0, \ix(rZ)
@@ -2189,8 +2189,8 @@ IZOP \p, E9                       # jp (iz): jump() sets WZ
 
 IZOP \p, F9                       # ld sp,iz
     lhu   rSP, \ix(rZ)
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 
 # DD CB d op / FD CB d op: t5 = the address, then the shared DDCB table on
 # op (at rPC+2; rPC is at the CB byte). No state changes here.
@@ -2225,8 +2225,8 @@ op_ED_\op:
 ed_nop:
     addiu rCYC, rCYC, 8
     RBUMP
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 
 .macro ED_LD_NN_RR op, rr          # ld (nn),rr: low then high, WZ = nn + 1
 EDOP \op
@@ -2240,8 +2240,8 @@ EDOP \op
     bal   wr8
      srl  t1, \rr, 8
     sh    t5, N64Z80_OFF_MEM_PTR(rZ)
-    b     next3
-     nop
+    b     dispatch
+     addiu rPC, rPC, 3
 .endm
 
 .macro ED_LD_RR_NN op, rr          # ld rr,(nn): WZ = nn + 1
@@ -2254,8 +2254,8 @@ EDOP \op
     READ8 t3, t0, t1
     sll   t3, t3, 8
     or    \rr, t2, t3
-    b     next3
-     nop
+    b     dispatch
+     addiu rPC, rPC, 3
 .endm
 
 # adc hl,rr (sub = 0) / sbc hl,rr (sub = 1): one 17-bit add of HL, rr (or
@@ -2295,8 +2295,8 @@ EDOP \op
     xori  rF, rF, 0x11
     ori   rF, rF, 0x02
   .endif
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 .endm
 
     ED_LD_NN_RR 43, rBC
@@ -2332,15 +2332,15 @@ op_ED_7C:
     xori  rF, rF, 0x11
     ori   rF, rF, 0x02
     andi  rA, t2, 0xFF
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 
 .macro ED_IM op, mode
 EDOP \op
     li    t0, \mode
     sb    t0, N64Z80_OFF_IM(rZ)
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 .endm
     ED_IM 46, 0
     ED_IM 66, 0
@@ -2351,16 +2351,16 @@ EDOP \op
 
 EDOP 47                           # ld i,a
     sb    rA, N64Z80_OFF_I(rZ)
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 
 EDOP 4F                           # ld r,a: R = A after the instruction
     andi  t0, rA, 0x80
     sw    t0, %gp_rel(n64z80_rhi)(gp)
     subu  t0, rA, rN
     sw    t0, %gp_rel(n64z80_rbase)(gp)
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 
 # ld a,i / ld a,r: S Z from A, H = N = 0, P/V = IFF2; Y X C kept.
 EDOP 57                           # ld a,i
@@ -2383,8 +2383,8 @@ ld_a_ir:
     sltu  t0, zero, t0            # bool: any nonzero byte is true
     sll   t0, t0, 2
     or    rF, rF, t0
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 
 # retn (seven encodings): IFF1 = IFF2 (set_iff1: the INT/IRQ event lanes
 # follow), then ret. reti: ret only.
@@ -2444,8 +2444,8 @@ ed_rxd:
     addiu t1, rHL, 1
     sh    t1, N64Z80_OFF_MEM_PTR(rZ)
     or    rF, rF, t0
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 
 # ldi / ldd core (ldi()): (DE) = (HL), HL and DE step by t6 (+1 / -1),
 # BC - 1; Y/X from bits 1/3 of (byte + A), H = N = 0, P/V = BC != 0, S Z C
@@ -2477,13 +2477,13 @@ ldx_core:
 EDOP A0                           # ldi
     bal   ldx_core
      li   t6, 1
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 EDOP A8                           # ldd
     bal   ldx_core
      li   t6, -1
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 
 # ldir / lddr: repeat while BC != 0 by going back to the instruction itself
 # (+5, WZ = PC + 1): a loop edge, so the run stops after every iteration,
@@ -2541,13 +2541,13 @@ cpx_core:
 EDOP A1                           # cpi
     bal   cpx_core
      li   a1, 1
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 EDOP A9                           # cpd
     bal   cpx_core
      li   a1, -1
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 
 # cpir: repeat (+5, WZ = PC + 1) while BC != 0 and not Z, else WZ + 1.
 EDOP B1
@@ -2566,8 +2566,8 @@ EDOP B1
 1:  lhu   t0, N64Z80_OFF_MEM_PTR(rZ)
     addiu t0, t0, 1
     sh    t0, N64Z80_OFF_MEM_PTR(rZ)
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 
 # cpdr: as cpir, but a repeat leaves WZ alone.
 EDOP B9
@@ -2584,8 +2584,8 @@ EDOP B9
 1:  lhu   t0, N64Z80_OFF_MEM_PTR(rZ)
     addiu t0, t0, 1
     sh    t0, N64Z80_OFF_MEM_PTR(rZ)
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
 
 
 # ---------------------------------------------------------------------------
@@ -3123,8 +3123,8 @@ OP F3                           # di: IFF1 = IFF2 = 0 (set_iff1 clears the INT l
     sb    zero, N64Z80_OFF_EVM_INT(rZ)
     sb    zero, N64Z80_OFF_EVM_LINE(rZ)
     addiu rPC, rPC, 1
-    CHARGE F3
-    DISPATCH
+    b     dispatch
+     CHARGE F3
 
 OP FB                           # ei: iff_delay = 1 (an event)
     li    t0, 1
@@ -3182,8 +3182,8 @@ OP 27                           # daa (the reference's daa())
     or    rF, rF, t2
     or    rF, rF, t5
     addiu rPC, rPC, 1
-    CHARGE 27
-    DISPATCH
+    b     dispatch
+     CHARGE 27
 
 # ---------------------------------------------------------------------------
 # ED I/O: in r,(C) / out (C),r and the block forms. The port is B << 8 | C.
@@ -3311,8 +3311,8 @@ EDOP \op
     b     jp_to
      move t0, rPC0
   .else
-    b     next1
-     nop
+    b     dispatch
+     addiu rPC, rPC, 1
   .endif
 .endm
     ED_IOBLK A2, inx_core, 1, 0, 0      # ini
