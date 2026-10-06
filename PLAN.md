@@ -17,8 +17,8 @@ already uses (`mvs64/m64k/`). It must be:
   with their cycle stamps.
 - **Fast:** the design target is **≤ 0.45 µs per Z80 instruction** (about 42
   VR4300 cycles) on the Metal Slug sound driver, 3.6× faster than the C core
-  (1.63 µs on the same trace). The hard requirement is lower, about 0.9 µs
-  (see "Why"); the gap is headroom for cache warm-up after 68k slices.
+  (1.63 µs on the same trace). It is the budget for **30 fps in Metal Slug's
+  mission with real-time sound**; 0.81 µs is enough for 20 fps (see "Why").
 - **A drop-in for mvs64:** the same API as mvs64's `z80.h`, chosen at build
   time with a flag (`Z80_CORE=asm|c`).
 - **Generic:** no Neo Geo-specific code in the core, so other N64 emulators
@@ -35,15 +35,27 @@ already uses (`mvs64/m64k/`). It must be:
   time per second of audio** at the peak.
 - In release builds sound can't keep up with the 68k and video on top: the
   overload governor mutes it and the mission runs at about 10 fps.
-- **Requirement:** `t ≤ B / 455k`, where B is the N64 time per audio second
-  the Z80 may use. The original plan implied B ≈ 0.4 s (0.4 µs × 1M), which
-  now gives **≤ 0.88 µs** (1.9× the C core). B should be confirmed from
-  release-build mvs64 profiles (frame time minus 68k, video and YM2610).
-  Caution: N64 DET_AUDIO builds generate about 2.4 frames of audio per
-  emulated frame (the pump emits one 1,760-sample AI buffer per 735-sample
-  frame), so their `snd%` overstates the real-time sound load by about 2.4×;
-  the YM2610 "0.38 s per second" figure needs re-checking for the same
-  reason.
+- **Measured budget** (mvs64 `main` d04c08f, ares, DET_AUDIO fixed in mvs64
+  PR #23; details in `test/traces/mvs64-budget.md`). Per second of mission
+  audio, sound costs about 1,040 ms of N64 time: Z80 673 ms (418k
+  instructions × 1.61 µs), YM2610 166 ms, other sound overhead ~200 ms. Each
+  guest frame also costs ~14.8 ms outside sound (68k 72%, video 13%,
+  DMA/other 4% of 16.7 ms). With real-time sound at guest frame rate F:
+  `F × 14.8 ms + Z80 + 367 ms ≤ 1,000 ms`, at 418k instructions/s:
+
+  | Mission fps | Z80 may use | Z80 µs/instruction | vs C core (1.61 µs) |
+  |---|---|---|---|
+  | 20 | 337 ms/s | **0.81** | 2.0× |
+  | 25 | 263 ms/s | **0.63** | 2.6× |
+  | 30 | 189 ms/s | **0.45** | 3.6× |
+  | 35 | 115 ms/s | 0.28 | 5.8× |
+
+  - At the 455k peak second the budgets are about 8% tighter.
+  - Above about 35 fps the Z80 can't close the gap alone: the YM2610, the
+    sound overhead and the 68k are the limits (mvs64-side work).
+  - These are warm-cache replay-equivalent rates; in game the asm core also
+    pays icache/dcache warm-up after each 68k slice, so measure in mvs64
+    (M5), not only on the trace.
 - C-level tuning got about 10–15% per round (mvs64 PRs #19 and #21). The rest
   needs an asm core.
 - Profile of the C core: about half of each instruction was loop and dispatch
@@ -86,7 +98,8 @@ commit's history.
 
 ## 3. API contract (must match mvs64's `z80.h` behavior)
 
-The reference is `reference/z80.h` (mvs64 commit 54f7973, PR #21). Keep
+The reference is `reference/z80.h` (mvs64 commit 54f7973, PR #21; identical
+to mvs64 `main` d04c08f, where PR #21 is merged). Keep
 the struct field names, because mvs64's `sound_neogeo.c` reads and writes
 them directly: `pc, sp, a, f, b, c, ..., iff1, iff2, halted, int_pending,
 nmi_pending, irq_line, iff_delay, cyc, r, wrote, wrote_any, irq_redeliver,
