@@ -361,7 +361,8 @@ number in `docs/measurements.md`)
   core in the same build (2.5×).*
   - Exit: differential clean; measurable speedup on the trace.
 - **M3: top ~60 opcodes plus FD CB `BIT`** (~95%), with the hot set inside
-  the §4.3 icache budget.
+  the §4.3 icache budget. *Done 2026-10-06: 0.577 µs/instr on the Metal
+  Slug trace (C core 1.65 in the same build, 2.9×).*
   - Exit: µs/instruction on the trace ≤ 0.6.
 - **M4: full asm coverage.** The C fallback becomes a debug option
   (`N64Z80_C_FALLBACK=1`).

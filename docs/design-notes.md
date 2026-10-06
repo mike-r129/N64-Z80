@@ -298,3 +298,39 @@ Performance findings (all A/B measured, see measurements.md):
   instructions cost 500-900 cycles each (full state sync around the owner
   callback). M3's exit (<= 0.6 us) and M4's (<= 0.45 us) are not reached
   yet.
+
+## 2026-10-06 (M3): layout, R in a register, run overhead
+
+M3's exit (<= 0.6 us/instr on the Metal Slug trace) is reached: 0.577 us,
+2.9x the C core in the same build. A Fable advisor review of the M2 core
+(cycle budget, map files, pipeline hazards) set the order of the work.
+
+- **One code section.** GAS rounds a MIPS section's size up to its
+  alignment, so the 16 KB-aligned hot section was 16 KB long and the cold
+  code started on the hot block's icache lines. Hot and cold are now
+  subsections 0 and 1 of `.text.n64z80`, so the cold code follows the hot
+  block directly. Port I/O and EI/DI joined the hot list (few, but each
+  costs hundreds of cycles).
+- **R's prefix increment in `$at`.** `$at` is free under `.set noat`. The
+  prefix handler counts R's second increment in its `jr` delay slot
+  (pfx_fallback takes it back), instead of a load/add/store in every
+  prefixed handler: 9 KB less code, -5% on the trace. C clobbers `$at`, so
+  it lives in the struct's R across call_c (save_state/load_state) and on
+  the stack across the write callback; libdragon's exception handler saves
+  it.
+- **Run entry and exit.** BC/DE load and store as one unaligned word
+  (lwl/lwr), and a loop edge whose rCYC is still negative stops at once:
+  not poisoned means cbase == until and nothing to service. The scan-loop
+  bench (a z80_run call every 4 instructions) went 81.4 -> 73.6 cycles per
+  instruction; per-run overhead matters because mvs64 runs to the next loop
+  edge (Metal Slug: 46 instructions per run).
+- **What ares charges** (calibrated by inserting 32 instructions in the run
+  entry): 1 cycle per instruction, 2 per load or store even on a cache hit,
+  and no load-use interlock. Pipeline-hazard fixes therefore only show on
+  hardware; fewer loads show in both.
+- **Data layout is a small lever.** Padding the core's data by 1/2/4 KB
+  moved the asm core's trace time by at most 2.4% (the C core's by up to
+  27%), so the advisor's proposed 8 KB-aligned table block was not done.
+- samsho2's short trace (11 instructions per run, dominated by EI/OUT/DI
+  and run overhead) moves +-3% with any layout change; Metal Slug is the
+  metric.
