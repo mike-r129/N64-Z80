@@ -145,7 +145,11 @@ n64z80_prof_cnt: .space 4 * PROF_KEYS
   .ifdef HOT_\name
     HOT
   .else
+  .ifdef USED_\name
     COLD
+  .else
+    RARE
+  .endif
   .endif
 .endm
     .irp op, 28,FD,A7,7E,21,23,CA,3A,77,6F,08,ED,E6,2C,C4,CD,C9,BE,DD,20
@@ -165,6 +169,48 @@ n64z80_prof_cnt: .space 4 * PROF_KEYS
     .endr
     .irp op, ED_5B,ED_42,ED_52,ED_53,ED_51,ED_59,ED_78,CB_57,CB_66
     .set HOT_\op, 1
+    .endr
+# The other opcodes the three traces run (a full sampling profile): cold.
+# Everything else, never seen there, goes to the rare subsection, which
+# fills the code at 16 KB multiples past the hot block's icache lines.
+    .irp op, 01,04,05,06,09,0B,0C,0D,10,11,12,13,14,16,17,18
+    .set USED_\op, 1
+    .endr
+    .irp op, 1A,1E,1F,25,2B,2E,2F,34,35,36,37,38,3C,41,43,44
+    .set USED_\op, 1
+    .endr
+    .irp op, 4D,50,51,54,56,57,58,59,5A,5C,5D,60,62,66,67,69
+    .set USED_\op, 1
+    .endr
+    .irp op, 6A,6B,6E,72,73,7B,7C,80,83,84,85,88,8B,8E,8F,90
+    .set USED_\op, 1
+    .endr
+    .irp op, 94,96,98,AA,AB,AC,B1,B2,B3,B4,B5,B6,B7,B8,B9,BB
+    .set USED_\op, 1
+    .endr
+    .irp op, C0,C1,C5,C6,CB_0B,CB_1C,CB_1D,CB_20,CB_28,CB_38,CB_47,CB_4F,CB_5F,CB_67,CB_6F,CB_77
+    .set USED_\op, 1
+    .endr
+    .irp op, CB_CE,CB_FD,CE,CF,D0,D1,D2,D5,D6,D9,DA,DC,DD_09,DD_19,DD_35,DD_36
+    .set USED_\op, 1
+    .endr
+    .irp op, DD_46,DD_4E,DD_54,DD_56,DD_5D,DD_5E,DD_62,DD_66,DD_6B,DD_6E,DD_70,DD_71,DD_72,DD_73,DD_74,DD_75
+    .set USED_\op, 1
+    .endr
+    .irp op, DD_77,DD_7E,DD_86,DD_96,DD_AE,DD_BE,DD_E1,DD_E3,DD_E5,E1,E2,E3,E5,E9,ED_41,ED_43
+    .set USED_\op, 1
+    .endr
+    .irp op, ED_4B,ED_4D,ED_5F,ED_73,ED_79,ED_A0,ED_A8,ED_B0,F1,F5,FA,FD_19,FD_22,FD_36,FD_46,FD_4E
+    .set USED_\op, 1
+    .endr
+    .irp op, FD_54,FD_5D,FD_66,FD_6B,FD_70,FD_72,FD_73,FD_74,FD_75,FD_86,FD_E1,FD_E5,XC_06,XC_0E,XC_16,XC_1E
+    .set USED_\op, 1
+    .endr
+    .irp op, XC_26,XC_2E,XC_36,XC_3E,XC_86,XC_8E,XC_96,XC_9E,XC_A6,XC_AE,XC_B6,XC_BE,XC_C6,XC_CE,XC_D6,XC_DE
+    .set USED_\op, 1
+    .endr
+    .irp op, XC_E6,XC_EE,XC_F6,XC_FE
+    .set USED_\op, 1
     .endr
 
     HOT
@@ -2143,7 +2189,7 @@ CBOP \op
 # result to register z unless z = 6. cyc_ddfd[CB] is 0.
 
 .macro XC_ROT op, core, r
-    COLD
+    PLACE XC_\op
 op_XC_\op:
     sh    t5, N64Z80_OFF_MEM_PTR(rZ)
     READ8 t0, t5, t1
@@ -2177,7 +2223,7 @@ op_XC_\o7:
 .endm
 
 .macro XC_RES_SET op, set, y, r
-    COLD
+    PLACE XC_\op
 op_XC_\op:
     sh    t5, N64Z80_OFF_MEM_PTR(rZ)
     READ8 t0, t5, t1
@@ -2542,7 +2588,7 @@ op_ED_\op:
 
 # Every ED opcode exec_opcode_ed doesn't implement: an 8-cycle NOP
 # (gen_tables.py checks the 8).
-    COLD
+    RARE
 ed_nop:
     addiu rCYC, rCYC, 8
     b     dispatch
@@ -2636,7 +2682,7 @@ EDOP \op
     ED_ADC_SBC 62, 1, rHL
     ED_ADC_SBC 72, 1, rSP
 
-    COLD
+    RARE
 op_ED_44:                         # neg (all eight encodings): subb(0, A, 0)
 op_ED_4C:
 op_ED_54:
@@ -2850,7 +2896,7 @@ ldxr_tail:
 # cpi / cpd core (cpi()): subb(A, (HL), 0) with C kept, HL += a1, BC - 1,
 # Y/X from bits 1/3 of (result - H), P/V = BC != 0, WZ += a1 (the step:
 # ADDB clobbers t2-t7). bal; clobbers t0-t7, t9.
-    COLD
+    RARE
 cpx_core:
     andi  t9, rF, 1
     READ8 t0, rHL, t1
@@ -3599,7 +3645,7 @@ EDOP \op
 # ini / ind (ini(), ind()): (HL) = port_in(BC); HL += a1; B - 1;
 # Z = (B == 0), N = 1, the rest kept; WZ = BC + 1 (ini) / BC - 2 (ind).
 # rPC is at the second opcode byte. bal.
-    COLD
+    RARE
 inx_core:
     sw    ra, F_IO+0(sp)
     sw    a1, F_IO+4(sp)
