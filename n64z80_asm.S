@@ -957,38 +957,68 @@ alu_or:
     addu  t1, rA, gp
     b     dispatch
      lbu  rF, %gp_rel(n64z80_sz53p)(t1)
-alu_cp:                           # sub without the result; Y/X from the operand
+alu_cp:                           # subb(A, v, 0) without the result; Y/X from v
+    subu  t2, rA, t0                # r (bit 8 set on a borrow)
+    andi  t3, t2, 0xFF
+    addu  t3, t3, gp
+    lbu   t1, %gp_rel(n64z80_sz53p)(t3)
+    sltu  t4, rA, t0                # C
+    xor   t5, rA, t0
+    xor   t6, t5, t2
+    andi  t6, t6, 0x10              # H: borrow into bit 4
+    xor   t7, rA, t2
+    and   t5, t5, t7
+    andi  t5, t5, 0x80
+    srl   t5, t5, 5                 # V: (A ^ v) & (A ^ r) & 0x80
+    andi  t1, t1, 0xC0              # S Z
+    or    t1, t1, t4
+    or    t1, t1, t6
+    or    t1, t1, t5
     andi  t9, t0, 0x28
-    xori  t0, t0, 0xFF
-    li    t1, 1
-    ADDB  rA, t0, t1
-    xori  rF, rF, 0x11
-    ori   rF, rF, 0x02
-    andi  rF, rF, 0xD7
+    or    t1, t1, t9
     b     dispatch
-     or    rF, rF, t9
+     ori  rF, t1, 0x02              # N
 
 # INC / DEC of byte t0: t2 = result byte, F as the reference's inc()/dec()
-# (C kept). bal; clobbers t1, t3-t7, t9, v0.
+# (addb(v, 1, 0) / subb(v, 1, 0) with C kept): S Z Y X from the result, H
+# when the low nibble wraps, V only for 0x7F -> 0x80 / 0x80 -> 0x7F, N for
+# DEC. bal; clobbers t1, t3.
 inc_core:
-    andi  t9, rF, 1
-    li    t1, 1
-    ADDB  t0, t1, zero
-    andi  rF, rF, 0xFE
-    or    rF, rF, t9
+    addiu t2, t0, 1
+    andi  t2, t2, 0xFF
+    addu  t1, t2, gp
+    lbu   t1, %gp_rel(n64z80_sz53p)(t1)
+    andi  rF, rF, 1
+    andi  t1, t1, 0xFB
+    or    rF, rF, t1
+    andi  t3, t2, 0x0F
+    sltiu t3, t3, 1                 # H: xF -> x0
+    sll   t3, t3, 4
+    or    rF, rF, t3
+    xori  t3, t2, 0x80
+    sltiu t3, t3, 1                 # V: 0x7F -> 0x80
+    sll   t3, t3, 2
     jr    ra
-     andi t2, t2, 0xFF
-dec_core:                         # subb(v, 1, 0) = addb(v, 0xFE, 1), C/H flipped, N
-    andi  t9, rF, 1
-    li    t1, 0xFE
-    li    v0, 1
-    ADDB  t0, t1, v0
-    xori  rF, rF, 0x11
-    ori   rF, rF, 0x02
-    andi  rF, rF, 0xFE
-    or    rF, rF, t9
+     or   rF, rF, t3
+dec_core:
+    addiu t2, t0, -1
+    andi  t2, t2, 0xFF
+    addu  t1, t2, gp
+    lbu   t1, %gp_rel(n64z80_sz53p)(t1)
+    andi  rF, rF, 1
+    andi  t1, t1, 0xFB
+    or    rF, rF, t1
+    andi  t3, t2, 0x0F
+    xori  t3, t3, 0x0F
+    sltiu t3, t3, 1                 # H: x0 -> xF
+    sll   t3, t3, 4
+    or    rF, rF, t3
+    xori  t3, t2, 0x7F
+    sltiu t3, t3, 1                 # V: 0x80 -> 0x7F
+    sll   t3, t3, 2
+    or    rF, rF, t3
     jr    ra
-     andi t2, t2, 0xFF
+     ori  rF, rF, 0x02              # N
 
 # ---------------------------------------------------------------------------
 # Handler families.
