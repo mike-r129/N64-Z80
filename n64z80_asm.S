@@ -79,11 +79,47 @@ n64z80_lastpc:  .word 0     # the run's last_pc pointer
 n64z80_wmap:    .word 0     # write page map (n64z80_set_wmap), or 0
     .globl n64z80_nfallback
 n64z80_nfallback: .word 0   # instructions run by the C fallback (statistics)
+#ifdef N64Z80_PROF
+n64z80_prof_down:  .word 1  # dispatches until the next sample event
+n64z80_prof_open:  .word 0  # 1 while an instruction is being timed
+n64z80_prof_start: .word 0  # COP0 Count at its dispatch
+n64z80_prof_key:   .word 0  # its key
+#endif
 
 # S, Z, Y, X and P/V of each result byte (the reference's table).
 n64z80_sz53p:   .byte N64Z80_SZ53P
 
+#ifdef N64Z80_PROF
+# Profiling build (make PROF=1), sampling: every 32nd dispatch starts timing
+# that instruction (COP0 Count) and the next dispatch charges the ticks to
+# its key: the opcode, or 256 * group + second byte for prefixed ones
+# (group 1 CB, 2 ED, 3 DD, 4 FD). n64z80_prof_cyc[key] holds ticks,
+# n64z80_prof_cnt[key] (right after it) the samples. Every dispatch pays a
+# 5-instruction countdown, included in the samples; a sample still open at
+# the end of a run is dropped.
+#define PROF_KEYS 1281
+    .section .bss
+    .balign 4
+    .globl n64z80_prof_cyc, n64z80_prof_cnt
+n64z80_prof_cyc: .space 4 * PROF_KEYS
+n64z80_prof_cnt: .space 4 * PROF_KEYS
+#endif
+
     .text
+
+# Profiling: count down to the next sample event (keeps t0, the opcode;
+# clobbers t1-t3, t9, ra).
+.macro PROF_TICK
+#ifdef N64Z80_PROF
+    lw    t1, %gp_rel(n64z80_prof_down)(gp)
+    addiu t1, t1, -1
+    bnez  t1, .Lprof\@
+     sw   t1, %gp_rel(n64z80_prof_down)(gp)
+    bal   prof_sample
+     nop
+.Lprof\@:
+#endif
+.endm
 
 # Next instruction, after the previous one's tail: run out / event check,
 # then the fetch.
@@ -95,6 +131,7 @@ n64z80_sz53p:   .byte N64Z80_SZ53P
 
 # Fetch and jump, with t0 = the opcode (already loaded from 0(rPC)).
 .macro DISPATCH_FETCHED
+    PROF_TICK
     sltu  t1, rPC, rLIM
     sll   t0, t0, 2
     beqz  t1, refetch
@@ -124,12 +161,12 @@ n64z80_sz53p:   .byte N64Z80_SZ53P
     ld    t0, N64Z80_OFF_EVENTS(rZ)
     ld    t1, N64Z80_OFF_EV_MASK(rZ)
     and   t0, t0, t1
-    beqz  t0, 1f
+    beqz  t0, .Lpoison\@
      lw   t0, %gp_rel(n64z80_cbase)(gp)
     addu  t0, t0, rCYC
     sw    t0, %gp_rel(n64z80_cbase)(gp)
     move  rCYC, zero
-1:
+.Lpoison\@:
 .endm
 
 # ---------------------------------------------------------------------------
@@ -155,6 +192,9 @@ n64z80_run:
     sw    a2, %gp_rel(n64z80_lastpc)(gp)
     sw    zero, %gp_rel(n64z80_lastw)(gp)
     move  rN, zero
+#ifdef N64Z80_PROF
+    sw    zero, %gp_rel(n64z80_prof_open)(gp)
+#endif
 
     # The owner may have changed IFF1 or the event bytes since the last run:
     # rebuild ev_mask (constant lanes, then IFF1's), as the reference does.
@@ -173,6 +213,38 @@ n64z80_run:
     # The first instruction runs whatever the budget.
     b     pre_insn
      nop
+
+#ifdef N64Z80_PROF
+# Sample event (t0 = the opcode being dispatched): close the open sample and
+# charge it, or open one on this instruction.
+prof_sample:
+    lw    t2, %gp_rel(n64z80_prof_open)(gp)
+    beqz  t2, 1f
+     mfc0 t3, $9
+    lw    t2, %gp_rel(n64z80_prof_start)(gp)
+    lw    t1, %gp_rel(n64z80_prof_key)(gp)
+    subu  t3, t3, t2
+    sll   t1, t1, 2
+    la    t9, n64z80_prof_cyc
+    addu  t9, t9, t1
+    lw    t1, 0(t9)
+    addu  t1, t1, t3
+    sw    t1, 0(t9)
+    lw    t1, 4 * PROF_KEYS(t9)
+    addiu t1, t1, 1
+    sw    t1, 4 * PROF_KEYS(t9)
+    sw    zero, %gp_rel(n64z80_prof_open)(gp)
+    li    t1, 31
+    jr    ra
+     sw   t1, %gp_rel(n64z80_prof_down)(gp)
+1:  li    t1, 1
+    sw    t1, %gp_rel(n64z80_prof_open)(gp)
+    sw    t1, %gp_rel(n64z80_prof_down)(gp)
+    sw    t0, %gp_rel(n64z80_prof_key)(gp)
+    mfc0  t3, $9
+    jr    ra
+     sw   t3, %gp_rel(n64z80_prof_start)(gp)
+#endif
 
 # ---------------------------------------------------------------------------
 # Slow exit: the tail of an instruction found rCYC >= 0 (out of cycles or
@@ -370,6 +442,14 @@ load_state:
 # ---------------------------------------------------------------------------
 # End of the run (cbase == until here): write everything back.
 stop:
+#ifdef N64Z80_PROF
+    lw    t0, %gp_rel(n64z80_prof_open)(gp)
+    sw    zero, %gp_rel(n64z80_prof_open)(gp)
+    beqz  t0, 1f                  # a sample open across the exit: drop it,
+     li   t1, 1                   # and sample the next run's first instruction
+    sw    t1, %gp_rel(n64z80_prof_down)(gp)
+1:
+#endif
     jal   save_state
      nop
     lw    t0, %gp_rel(n64z80_lastw)(gp)
@@ -1528,9 +1608,13 @@ pfx_fallback:
 .endm
 
 # Jump through `table` on the byte at rPC+1 (t0), with rPC advanced to it.
-.macro PREFIX table
+.macro PREFIX table, group
     lbu   t0, 1(rPC)
     addiu rPC, rPC, 1
+#ifdef N64Z80_PROF
+    addiu t1, t0, 256 * \group
+    sw    t1, %gp_rel(n64z80_prof_key)(gp)
+#endif
     sll   t1, t0, 2
     addu  t1, t1, gp
     lw    t1, %gp_rel(\table)(t1)
@@ -1539,13 +1623,13 @@ pfx_fallback:
 .endm
 
 OP CB
-    PREFIX n64z80_cbtab
+    PREFIX n64z80_cbtab, 1
 OP DD
-    PREFIX n64z80_ddtab
+    PREFIX n64z80_ddtab, 3
 OP ED
-    PREFIX n64z80_edtab
+    PREFIX n64z80_edtab, 2
 OP FD
-    PREFIX n64z80_fdtab
+    PREFIX n64z80_fdtab, 4
 
 # DD/FD before an opcode exec_opcode_ddfd does not handle itself: it runs as
 # the unprefixed opcode (t0 = it, rPC at it) after cyc_ddfd[op] and R + 1.

@@ -21,6 +21,12 @@ ZDIFF_SEED ?= 1
 ZEX_MAX_STEPS ?= 5000000
 ZEX_SETS ?= 3
 ZEX_ONLY ?= 0
+# PROF=1: per-opcode cycle profile of the asm core on the traces (slower).
+PROF ?= 0
+ifeq ($(PROF),1)
+N64_CFLAGS += -DN64Z80_PROF
+N64_ASFLAGS += -DN64Z80_PROF
+endif
 
 # ZEX exercisers (GPLv2: fetched, not committed). See test/roms/README.md.
 ZEX_COMMIT := d64fe10a2274e5e40019b1086bf7d8990cbc5f23
