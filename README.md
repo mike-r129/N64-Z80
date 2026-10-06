@@ -10,10 +10,10 @@ The emulator is meant to run within a [libdragon](https://github.com/DragonMinde
 application. It is not compatible with other Nintendo 64 development
 environments.
 
-> **Status:** milestone M0 (test harness, baseline measurements) is done;
-> M1 (the asm run loop, with every opcode still on the C core) is next.
-> There is no assembly core yet, so there is nothing to integrate into mvs64
-> before M4. See [PLAN.md](PLAN.md).
+> **Status:** milestone M1 is done: the asm run loop (`n64z80_run`) is in
+> place and exact, but every opcode still executes in the C fallback, so it
+> is slower than the C core. M2 adds the first asm opcode handlers. Nothing
+> to integrate into mvs64 before M4. See [PLAN.md](PLAN.md).
 
 ## Features
 
@@ -46,16 +46,18 @@ runs:
   case, and the full state, every bus event (with its cycle stamp), the
   memory image and the stop point must match. Planted-bug mutants of the
   reference (`test/mutants/`) must each be caught;
-* the prelim and ZEXDOC instruction exercisers with CP/M BDOS stubs, checked
-  per test group against exact instruction and cycle counts;
+* the prelim, ZEXDOC and ZEXALL instruction exercisers with CP/M BDOS stubs,
+  driven through `z80_run` and checked per test group against the
+  reference's exact instruction and cycle counts;
 * replays of recorded mvs64 sound-driver traces (`test/traces/*.z80t`,
   gitignored because they contain game ROM; packed into the ROM when
   present): every recorded step count, state hash, IN/OUT and RAM checkpoint
   must match, and the replay time is the speed benchmark on real driver code;
 * benchmarks (COP0 Count around `z80_run`).
 
-Every verdict line starts with `>>> PASS` or `>>> FAIL`. Until milestone M1
-the candidate core is the reference itself, which validates the harness.
+Every verdict line starts with `>>> PASS` or `>>> FAIL`. The candidate is
+the asm core; the PC build (`make pc`) also runs the reference against an
+unmodified copy of itself, to validate the harness.
 
 ```sh
 # in WSL, with the libdragon toolchain
@@ -63,7 +65,8 @@ export N64_INST=/root/n64inst
 make                    # fetches the ZEX ROMs once, builds the ROM
 make ares               # runs it headless in ares, stops at the done marker
 make pc                 # host build of the same harness (build/pc/zpc)
-make ZEX_MAX_STEPS=0    # all 67 ZEXDOC groups (hours on N64)
+make ZEX_MAX_STEPS=0    # all 67 groups of both exercisers (many hours on N64)
+make ZEX_ONLY=1 ZEX_SETS=2 ZEX_MAX_STEPS=0   # full ZEXALL only
 ```
 
 `tools/ares-run.ps1` can also be run directly from PowerShell; set

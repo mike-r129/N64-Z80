@@ -183,3 +183,63 @@ don't apply; needs a check of m64k's TLB budget.
   target (≤ 0.45 µs, M4 exit) is the 30 fps point; the M3 exit (≤ 0.6 µs)
   is already past the 25 fps point.
 - mvs64 PR #21 is merged, so `reference/` equals mvs64 `main` (d04c08f).
+
+## 2026-10-05 (M1): the asm run loop
+
+M1 puts `n64z80_run` in asm (`n64z80_asm.S`) with every instruction still
+executed by the C fallback, so the loop, register file, PC mapping, event
+handling, lazy R and `wrote` tracking are tested before any handler exists.
+A Fable 5.1 advisor reviewed the design; its corrections are folded in.
+
+- **Registers.** s0 A, s1 F, s2 HL, s3 DE, s4 BC, s7 SP; s5 host pointer
+  to the next byte; s6 cycles; s8 instruction count; a0 the owner's `z80*`
+  (any struct, so mvs64's `z80_hot.cpu` works unchanged); v1 PC bias; a3
+  fetch limit; a2 `z->rmap`; t8 the Z80 PC of the current instruction.
+  WZ stays in the struct (`sh` truncates for free). The caller-saved ones
+  are reloaded after every C call.
+- **pc0 is computed in the dispatch** (`subu t8, s5, v1` fills the lw→jr
+  interlock, so it is free). This supersedes item 1's "no per-instruction
+  t8"; t8 gives the loop-edge test, `last_pc` and the fallback's PC.
+- **PC mapping.** Z80 PC = s5 − v1 with v1 = rmap[page]. The fast fetch
+  runs while s5 < a3 = host end of the page − 4 (−4, not −3: the opcode
+  byte is read before the check, and on page 0xFF it keeps every fast
+  instruction's next PC ≤ 0xFFFF, so a sequential wrap only happens in the
+  fallback). Past it, `refetch` extends a3 by 256 when the next page has
+  the same rmap entry (same host region; never past page 0xFF), otherwise
+  the instruction runs in the C fallback.
+- **Cycles and poisoning** (item 3 plus a better poison). s6 = cyc − cbase
+  counts up and the tail stops on `bgez s6`; cyc = cbase + s6 holds
+  everywhere, so callbacks always see the exact `cyc`. cbase is `until`,
+  except that poisoning (events & ev_mask may be nonzero) does
+  `cbase += s6; s6 = 0`. `slow_exit` restores cbase = until and follows the
+  reference order: interrupt service (C), HALT stop, cycle and loop-edge
+  stop, then the next iteration's IRQ re-assertion and HALT NOP. Dispatches
+  out of `slow_exit` and at entry skip the cycle test (the first
+  instruction always runs).
+- **s8 is 1-based**: dispatch increments it, so during instruction k and
+  its interrupt service s8 == k. Lazy R is `rhi | ((rbase + s8) & 0x7F)`;
+  the fallback re-executes the instruction's R increments, so it gets
+  `rbase − 1` first. `wrote`: the write/OUT hooks store s8 in `lastw`;
+  wrote = lastw == s8, wrote_any = lastw != 0.
+- **C fallback.** `build/n64z80_ref.c` is reference/z80.c with its
+  `write_byte` / `port_out` calls rewritten (sed, checked) to hooks that set
+  `wrote` and `lastw` before calling the owner. The library's symbols are
+  `n64z80_*` (`n64z80.h`); the struct is the reference's, layout
+  static-asserted against `n64z80_offsets.h`.
+- **ZEX through z80_run.** `zex_expect.h` now also holds each group's
+  instruction and cycle counts when driven by `z80_run` (the stop after the
+  final OUT overshoots differently from `z80_step`); the testsuite runs the
+  asm core's prelim, ZEXDOC and ZEXALL subsets in that mode.
+
+For M2 (from the advisor's review):
+
+- **DD/FD chains** consume any number of prefix bytes in one instruction
+  (the reference recurses), so "≤ 4 bytes per instruction" fails. A prefix
+  handler must repeat the limit check before it changes any state (R,
+  cycles), so a refetch mid-chain can rewind to t8 and hand the whole
+  instruction to C.
+- **Loop-edge transfers** store `z->pc` and enter `slow_exit` without
+  remapping: interrupt service can still continue the run (JR back from
+  0x20, then an IM1 accept to 0x38 > 0x20).
+- With the fallback disabled (M4), a straddling instruction needs a bounce
+  buffer: copy ≤ 4 bytes with 16-bit wrap into .sdata and point s5/v1 at it.

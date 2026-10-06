@@ -2,10 +2,10 @@
 // ZEX, bench) and the per-core wrappers (zcore.c).
 //
 // Every core under test is linked into the same binary: the reference C core
-// (REF), its unmodified copy (NEW, until the asm core replaces it) and the
-// planted-bug mutants (MUT1..). zcore.c is compiled once per core with
-// -DPFX=<name>; it renames the core's public symbols to <PFX>_* and exports
-// one `zcore` descriptor, <PFX>_core.
+// (REF), its unmodified copy (NEW: a harness self-check), the asm core (ASM,
+// N64 only) and the planted-bug mutants (MUT1..). zcore.c is compiled once
+// per core with -DPFX=<name>; it renames the core's public symbols to
+// <PFX>_* and exports one `zcore` descriptor, <PFX>_core.
 #ifndef ZCORE_H
 #define ZCORE_H
 
@@ -57,7 +57,7 @@ typedef struct {
   void (*diff_run)(Run* r, uint32_t until);
 } zcore;
 
-extern const zcore REF_core, NEW_core;
+extern const zcore REF_core, NEW_core, ASM_core;
 extern const zcore MUT1_core, MUT2_core, MUT3_core, MUT4_core;
 
 #endif

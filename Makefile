@@ -3,19 +3,24 @@
 #   make                 build n64z80_testsuite.z64 (fetches the ZEX ROMs once)
 #   make ares            build, then run it headless in ares (tools/ares-run.ps1)
 #   make pc              host build of the harness (build/pc/zpc)
-# Test knobs: ZDIFF_CASES, ZDIFF_SEED, ZEX_MAX_STEPS (0 = all 67 ZEXDOC groups).
+# Test knobs: ZDIFF_CASES, ZDIFF_SEED, ZEX_MAX_STEPS (0 = all 67 groups),
+# ZEX_SETS (1 = ZEXDOC, 2 = ZEXALL, 3 = both), ZEX_ONLY=1 (skip everything
+# but prelim and ZEX). Full ZEXALL: make ZEX_ONLY=1 ZEX_SETS=2 ZEX_MAX_STEPS=0.
 BUILD_DIR = build
 include $(N64_INST)/include/n64.mk
 
 ROM := n64z80_testsuite
 
-# Cores linked into the ROM (test/zcore.c, one copy each): the reference, its
-# stand-in for the candidate core, and the planted-bug mutants (test/mutants).
-CORES := REF NEW MUT1 MUT2 MUT3 MUT4
+# Cores linked into the ROM (test/zcore.c, one wrapper each): the reference,
+# the asm core and the planted-bug mutants (test/mutants). The C-vs-C
+# harness self-check (NEW) runs in the PC build.
+CORES := REF ASM MUT1 MUT2 MUT3 MUT4
 
 ZDIFF_CASES ?= 20000
 ZDIFF_SEED ?= 1
 ZEX_MAX_STEPS ?= 5000000
+ZEX_SETS ?= 3
+ZEX_ONLY ?= 0
 
 # ZEX exercisers (GPLv2: fetched, not committed). See test/roms/README.md.
 ZEX_COMMIT := d64fe10a2274e5e40019b1086bf7d8990cbc5f23
@@ -25,11 +30,15 @@ SHA_prelim.com := 3b3578f19030a4df7e25ce852f763af26053b12582a576c4dffb014aa7c590
 SHA_zexdoc.cim := 10b7c3972ff6765712ed160e5bd8750e4a13642f62b75711e062ef06a7f2f7b5
 SHA_zexall.cim := af7e5d86146d390a68440fb85668648f14a648602da29a1816d2ef11459411ae
 
+# The core is n64z80_asm.S plus its C side, n64z80.c (which includes the C
+# fallback generated below).
 src := test/testsuite.c test/zdiff.c test/zex.c test/bench.c test/replay.c
 asm := test/zex_roms.S
-OBJS := $(src:%.c=$(BUILD_DIR)/%.o) $(asm:%.S=$(BUILD_DIR)/%.o) $(CORES:%=$(BUILD_DIR)/zcore_%.o)
+OBJS := $(BUILD_DIR)/n64z80.o $(BUILD_DIR)/n64z80_asm.o \
+	$(src:%.c=$(BUILD_DIR)/%.o) $(asm:%.S=$(BUILD_DIR)/%.o) $(CORES:%=$(BUILD_DIR)/zcore_%.o)
 
-N64_CFLAGS += -Itest -Ireference -I$(BUILD_DIR)
+N64_CFLAGS += -I. -Itest -Ireference -I$(BUILD_DIR)
+N64_ASFLAGS += -I.
 
 all: $(ROM).z64
 test: all
@@ -55,6 +64,21 @@ $(BUILD_DIR)/zcore_REF.o $(BUILD_DIR)/zcore_NEW.o: test/zcore.c reference/z80.c 
 	@echo "    [CC] $< ($(patsubst zcore_%.o,%,$(notdir $@)))"
 	$(CC) -c $(CFLAGS) -DPFX=$(patsubst zcore_%.o,%,$(notdir $@)) -o $@ $<
 
+$(BUILD_DIR)/zcore_ASM.o: test/zcore.c n64z80.h n64z80_offsets.h
+	@mkdir -p $(dir $@)
+	@echo "    [CC] $< (ASM)"
+	$(CC) -c $(CFLAGS) -DPFX=ASM -DZCORE_ASM -o $@ $<
+
+# The C fallback: the reference with its write_byte / port_out calls routed
+# through n64z80.c's hooks (core-managed `wrote`). The check fails the build
+# if a call site is left over, e.g. after a reference update.
+$(BUILD_DIR)/n64z80_ref.c: reference/z80.c
+	@mkdir -p $(dir $@)
+	sed -e 's/z->write_byte(z->userdata, /n64z80_c_wb(z, /' \
+	    -e 's/z->port_out(z, /n64z80_c_out(z, /' $< > $@
+	@! grep -n -e '->write_byte(' -e '->port_out(' $@ || (rm -f $@; false)
+$(BUILD_DIR)/n64z80.o: $(BUILD_DIR)/n64z80_ref.c
+
 $(BUILD_DIR)/zcore_MUT%.o: test/zcore.c $(BUILD_DIR)/mut%/z80.c
 	@echo "    [CC] $< (MUT$*)"
 	$(CC) -c -I$(BUILD_DIR)/mut$* $(CFLAGS) -DPFX=MUT$* -o $@ $<
@@ -70,8 +94,8 @@ $(BUILD_DIR)/mut%/z80.c: reference/z80.c test/mutants/mut%.sed
 # so changing one rebuilds testsuite.o.
 $(BUILD_DIR)/test_config.h: FORCE
 	@mkdir -p $(BUILD_DIR)
-	@printf '#define ZDIFF_CASES %s\n#define ZDIFF_SEED %s\n#define ZEX_MAX_STEPS %s\n' \
-		$(ZDIFF_CASES) $(ZDIFF_SEED) $(ZEX_MAX_STEPS) > $@.tmp
+	@printf '#define ZDIFF_CASES %s\n#define ZDIFF_SEED %s\n#define ZEX_MAX_STEPS %s\n#define ZEX_SETS %s\n#define ZEX_ONLY %s\n' \
+		$(ZDIFF_CASES) $(ZDIFF_SEED) $(ZEX_MAX_STEPS) $(ZEX_SETS) $(ZEX_ONLY) > $@.tmp
 	@cmp -s $@.tmp $@ && rm -f $@.tmp || mv $@.tmp $@
 $(BUILD_DIR)/test/testsuite.o: $(BUILD_DIR)/test_config.h
 
