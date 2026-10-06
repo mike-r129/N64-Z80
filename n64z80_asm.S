@@ -67,6 +67,7 @@
 #define F_RA2   120   // call_c's own return address
 #define F_WR    128   // wr8: ra, t2-t7, t8, Z80 PC, rRB (10 words); port_in/out: ra
 #define F_IO    168   // in_bc / inx_core / outx_core: ra, a1
+#define F_BN    176   // call_c / wr8: rLIM, rPC, rBIAS (a bounce across the call)
 
 # ---------------------------------------------------------------------------
 # Private state (gp-relative). The z80 struct itself is the owner's.
@@ -263,6 +264,7 @@ n64z80_prof_cnt: .space 4 * PROF_KEYS
     sw    a2, %gp_rel(n64z80_lastpc)(gp)
     sw    zero, %gp_rel(n64z80_lastw)(gp)
     move  rN, zero
+    li    rPC0, -1                  # below any pc for bounce's stop test
 #ifdef N64Z80_PROF
     sw    zero, %gp_rel(n64z80_prof_open)(gp)
 #endif
@@ -446,21 +448,25 @@ dispatch_nocyc:
     lbu   t0, 0(rPC)
     DISPATCH_FETCHED
 
-# rPC reached rLIM: rPC is in the last 4 bytes of a page (the instruction
-# before was in the fast path, at most 4 bytes long). Extend rLIM if the
-# next page continues the same host region (never past 0xFFFF), else run
-# this instruction from a copy (bounce). After an instruction run from the
-# copy (rLIM = 0), map the PC again (unbounce).
+# rPC reached rLIM: rPC is in the last 4 bytes of rBIAS's page, or (after a
+# callback remapped the PC mid-instruction) up to 4 bytes past it. Extend
+# rLIM if the page is rBIAS's and the next one continues the same host
+# region (never past 0xFFFF), else run this instruction from a copy
+# (bounce). After an instruction run from the copy (rLIM = 0), map the PC
+# again (unbounce).
 refetch:
     beqz  rLIM, unbounce             # only a bounce sets rLIM = 0
      subu t0, rPC, rBIAS
     srl   t0, t0, 8
-    xori  t1, t0, 0xFF
-    beqz  t1, bounce
+    sltiu t1, t0, 0xFF
+    beqz  t1, bounce                 # page 0xFF, or past 0xFFFF
      sll  t0, t0, 2
-    addu  t1, rRMAP, t0
-    lw    t1, 4(t1)
-    bne   t1, rBIAS, bounce
+    addu  t0, rRMAP, t0
+    lw    t1, 0(t0)
+    lw    t0, 4(t0)
+    bne   t1, rBIAS, bounce          # a callback remapped mid-instruction
+     nop
+    bne   t0, rBIAS, bounce
      nop
     b     dispatch_nocyc
      addiu rLIM, rLIM, 256
@@ -508,8 +514,14 @@ op_fallback:
 # Call the C function t9(rZ, a1) with the state written back to the struct,
 # then reload it (the callee may change anything, including the rmap).
     HOT
+# An instruction running from the bounce buffer (rLIM = 0) stays there: its
+# bytes are already copied, and unbounce maps the PC again afterwards with
+# the stop test (load_state's 16-bit PC would hide a wrap past 0xFFFF).
 call_c:
     sw    ra, F_RA2(sp)
+    sw    rLIM, F_BN+0(sp)
+    sw    rPC, F_BN+4(sp)
+    sw    rBIAS, F_BN+8(sp)
     jal   save_state
      sw   rPC0, %gp_rel(n64z80_pc0)(gp)
     jalr  t9
@@ -517,8 +529,13 @@ call_c:
     lw    rZ, F_Z(sp)
     jal   load_state
      lw   rPC0, %gp_rel(n64z80_pc0)(gp)
-    lw    ra, F_RA2(sp)
-    jr    ra
+    lw    t0, F_BN+0(sp)
+    bnez  t0, 1f
+     lw   ra, F_RA2(sp)
+    lw    rPC, F_BN+4(sp)
+    lw    rBIAS, F_BN+8(sp)
+    move  rLIM, zero
+1:  jr    ra
      nop
 
 # Write the registers back to the struct: pc = rPC - rBIAS, cyc, R.
@@ -786,6 +803,8 @@ wr8_cb:
     andi  t9, t9, 0xFFFF
     sw    t9, F_WR+32(sp)
     sw    rRB, F_WR+36(sp)
+    sw    rLIM, F_BN+0(sp)
+    sw    rBIAS, F_BN+8(sp)
     lw    t9, %gp_rel(n64z80_cbase)(gp)
     addu  t9, t9, rCYC
     sw    t9, N64Z80_OFF_CYC(rZ)
@@ -797,9 +816,14 @@ wr8_cb:
     lw    rZ, F_Z(sp)
     lw    rRMAP, N64Z80_OFF_RMAP(rZ)
     lw    rRB, F_WR+36(sp)
-    lw    t0, F_WR+32(sp)
-    REMAP
-    POISON_IF_EVENTS
+    lw    t0, F_BN+0(sp)
+    bnez  t0, 1f
+     lw   t0, F_WR+32(sp)
+    lw    rBIAS, F_BN+8(sp)         # bouncing: stay in the copy (as call_c)
+    b     2f
+     move rLIM, zero
+1:  REMAP
+2:  POISON_IF_EVENTS
     lw    ra, F_WR+0(sp)
     lw    t2, F_WR+4(sp)
     lw    t3, F_WR+8(sp)
@@ -1743,8 +1767,12 @@ OP 36                           # ld (hl),n
 # copy (the limit check is skipped: it fails there).
 bounce:
     subu  t0, rPC, rBIAS
+    andi  t0, t0, 0xFFFF
+    slt   t1, rPC0, t0
+    beqz  t1, edge_exit             # wrapped past 0xFFFF: pc <= pc0 stops
+     nop
     bal   bounce_fill
-     andi t0, t0, 0xFFFF
+     nop
     lbu   t0, 0(rPC)
     sll   t0, t0, 2
     addu  t0, t0, gp
@@ -1756,7 +1784,7 @@ bounce:
 unbounce:
     subu  t0, rPC, rBIAS
     andi  t0, t0, 0xFFFF
-    sltu  t1, rPC0, t0
+    slt   t1, rPC0, t0
     beqz  t1, edge_exit             # wrapped past 0xFFFF: pc <= pc0 stops
      nop
     REMAP
