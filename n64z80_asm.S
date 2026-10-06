@@ -2269,6 +2269,7 @@ ld_a_ir:
     sll   t0, t0, 6
     or    rF, rF, t0
     lbu   t0, N64Z80_OFF_IFF2(rZ)
+    sltu  t0, zero, t0            # bool: any nonzero byte is true
     sll   t0, t0, 2
     or    rF, rF, t0
     b     next1
@@ -2286,6 +2287,7 @@ op_ED_7D:
     addiu rCYC, rCYC, CYCED_45
     RBUMP
     lbu   t0, N64Z80_OFF_IFF2(rZ)
+    sltu  t0, zero, t0            # bool: any nonzero byte is true
     sb    t0, N64Z80_OFF_IFF1(rZ)
     subu  t0, zero, t0
     sb    t0, N64Z80_OFF_EVM_INT(rZ)
@@ -2970,7 +2972,9 @@ port_out:
     jr    ra
      nop
 
-OP DB                           # in a,(n): port A << 8 | n, WZ = A_old << 8 | (A + 1)
+# in a,(n): port A << 8 | n; WZ = A_old << 8 | (A + 1), an int OR: A = 0xFF
+# carries into WZ bit 8, as in the reference. Keep it.
+OP DB
     CHARGE DB
     lbu   t0, 1(rPC)
     addiu rPC, rPC, 2
@@ -2985,7 +2989,8 @@ OP DB                           # in a,(n): port A << 8 | n, WZ = A_old << 8 | (
     sh    t0, N64Z80_OFF_MEM_PTR(rZ)
     DISPATCH
 
-OP D3                           # out (n),a: WZ = (n + 1) | A << 8
+# out (n),a: WZ = (n + 1) | A << 8, the same bit-8 carry (n = 0xFF).
+OP D3
     CHARGE D3
     lbu   t0, 1(rPC)
     addiu rPC, rPC, 2
@@ -3209,8 +3214,9 @@ EDOP \op
     ED_IOBLK BB, outx_core, -1, 1, 0    # otdr: no +5
 
 # ===========================================================================
-# Dispatch tables, built from the handlers that exist: an opcode without one
-# runs in the C fallback (prefixed ones through pfx_fallback).
+# Dispatch tables, built from the handlers that exist: an opcode without
+# one runs in the C fallback (prefixed ones through pfx_fallback). .ifdef
+# only sees labels defined above it, so the tables must stay at the end.
     .section .sdata
     .balign 4
 
