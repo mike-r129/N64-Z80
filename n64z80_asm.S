@@ -55,12 +55,13 @@
 
 # Stack frame: o64 argument home area, callee-saved registers, rZ, and the
 # registers wr8 keeps across a write callback.
-#define FRAME   176
+#define FRAME   192
 #define F_S0     32
 #define F_RA    104
 #define F_Z     112
 #define F_RA2   120   // call_c's own return address
-#define F_WR    128   // wr8: ra, t2-t7, t8, Z80 PC (9 words)
+#define F_WR    128   // wr8: ra, t2-t7, t8, Z80 PC (9 words); port_in/out: ra
+#define F_IO    168   // in_bc / inx_core / outx_core: ra, a1
 
 # ---------------------------------------------------------------------------
 # Private state (gp-relative). The z80 struct itself is the owner's.
@@ -2908,6 +2909,278 @@ EDOP B9
     XC_RES_SET FD, 1, 7, 5    # set 7,(iz+d) -> l
     XC_RES_SET FE, 1, 7, 6    # set 7,(iz+d)
     XC_RES_SET FF, 1, 7, 7    # set 7,(iz+d) -> a
+
+# ===========================================================================
+# Ports and interrupt control.
+#
+# Port callbacks get the whole state written back (call_c: registers, PC as
+# the reference has it at the call, materialized R, cyc), may change the
+# rmap and the event bytes, and are followed by a remap and the poison
+# check. OUT marks the instruction as writing.
+
+# v0 = port_in(z, t0). bal; keeps rPC0; clobbers the caller-saved registers.
+port_in:
+    sw    ra, F_WR+0(sp)
+    move  a1, t0
+    lw    t9, N64Z80_OFF_PORT_IN(rZ)
+    jal   call_c
+     nop
+    POISON_IF_EVENTS
+    lw    ra, F_WR+0(sp)
+    jr    ra
+     nop
+
+# port_out(z, t0, t1). bal; as port_in.
+port_out:
+    sw    ra, F_WR+0(sp)
+    sw    rN, %gp_rel(n64z80_lastw)(gp)
+    move  a1, t0
+    move  a2, t1
+    lw    t9, N64Z80_OFF_PORT_OUT(rZ)
+    jal   call_c
+     nop
+    POISON_IF_EVENTS
+    lw    ra, F_WR+0(sp)
+    jr    ra
+     nop
+
+OP DB                           # in a,(n): port A << 8 | n, WZ = A_old << 8 | (A + 1)
+    CHARGE DB
+    lbu   t0, 1(rPC)
+    addiu rPC, rPC, 2
+    sll   t1, rA, 8
+    sw    t1, F_WR+4(sp)        # A_old << 8 (the stack slot survives the call)
+    bal   port_in
+     or   t0, t0, t1
+    andi  rA, v0, 0xFF
+    lw    t1, F_WR+4(sp)
+    addiu t0, rA, 1
+    or    t0, t0, t1
+    sh    t0, N64Z80_OFF_MEM_PTR(rZ)
+    DISPATCH
+
+OP D3                           # out (n),a: WZ = (n + 1) | A << 8
+    CHARGE D3
+    lbu   t0, 1(rPC)
+    addiu rPC, rPC, 2
+    sw    t0, F_WR+4(sp)
+    sll   t1, rA, 8
+    or    t0, t0, t1
+    bal   port_out
+     move t1, rA
+    lw    t0, F_WR+4(sp)
+    sll   t1, rA, 8
+    addiu t0, t0, 1
+    or    t0, t0, t1
+    sh    t0, N64Z80_OFF_MEM_PTR(rZ)
+    DISPATCH
+
+OP F3                           # di: IFF1 = IFF2 = 0 (set_iff1 clears the INT lanes)
+    sb    zero, N64Z80_OFF_IFF1(rZ)
+    sb    zero, N64Z80_OFF_IFF2(rZ)
+    sb    zero, N64Z80_OFF_EVM_INT(rZ)
+    sb    zero, N64Z80_OFF_EVM_LINE(rZ)
+    addiu rPC, rPC, 1
+    CHARGE F3
+    DISPATCH
+
+OP FB                           # ei: iff_delay = 1 (an event)
+    li    t0, 1
+    sb    t0, N64Z80_OFF_IFF_DELAY(rZ)
+    addiu rPC, rPC, 1
+    CHARGE FB
+    POISON_IF_EVENTS
+    DISPATCH
+
+OP 76                           # halt: halted = 1 (an event: the run stops)
+    li    t0, 1
+    sb    t0, N64Z80_OFF_HALTED(rZ)
+    addiu rPC, rPC, 1
+    CHARGE 76
+    POISON_IF_EVENTS
+    DISPATCH
+
+OP 27                           # daa (the reference's daa())
+    andi  t0, rA, 0x0F
+    andi  t1, rF, 0x10          # H
+    andi  t2, rF, 0x01          # C
+    move  t3, zero              # correction
+    sltiu t4, t0, 10
+    beqz  t4, 1f                # low digit > 9
+     nop
+    beqz  t1, 2f
+     nop
+1:  li    t3, 0x06
+2:  sltiu t4, rA, 0x9A
+    beqz  t4, 3f                # A > 0x99
+     nop
+    beqz  t2, 4f
+     nop
+3:  addiu t3, t3, 0x60
+    li    t2, 1                 # C = 1
+4:  andi  t4, rF, 0x02          # N
+    beqz  t4, 5f
+     sltiu t5, t0, 6
+    # subtraction: H = H && low digit < 6; A -= correction
+    subu  rA, rA, t3
+    bnez  t5, 7f
+     nop
+    b     7f
+     move t1, zero
+5:  # addition: H = low digit > 9; A += correction
+    sltiu t5, t0, 10
+    xori  t5, t5, 1
+    sll   t1, t5, 4
+    addu  rA, rA, t3
+7:  andi  rA, rA, 0xFF
+    addu  t5, rA, gp
+    lbu   t5, %gp_rel(n64z80_sz53p)(t5)
+    andi  rF, rF, 0x02          # N kept
+    or    rF, rF, t1
+    or    rF, rF, t2
+    or    rF, rF, t5
+    addiu rPC, rPC, 1
+    CHARGE 27
+    DISPATCH
+
+# ---------------------------------------------------------------------------
+# ED I/O: in r,(C) / out (C),r and the block forms. The port is B << 8 | C.
+
+# in_r_c: t2 = port_in(BC); S Z P from it, H = N = 0, Y X C kept.
+in_bc:
+    sw    ra, F_IO+0(sp)
+    bal   port_in
+     move t0, rBC
+    andi  t2, v0, 0xFF
+    addu  t0, t2, gp
+    lbu   t0, %gp_rel(n64z80_sz53p)(t0)
+    andi  rF, rF, 0x29
+    andi  t0, t0, 0xC4
+    or    rF, rF, t0
+    lw    ra, F_IO+0(sp)
+    jr    ra
+     nop
+
+.macro ED_IN op, r
+EDOP \op
+    bal   in_bc
+     addiu rPC, rPC, 1          # the reference's PC at the call: past the opcode
+  .if \r != 6
+    SETR  \r, t2
+  .endif
+  .if \r == 7
+    addiu t0, rBC, 1
+    sh    t0, N64Z80_OFF_MEM_PTR(rZ)
+  .endif
+    DISPATCH
+.endm
+    ED_IN 40, 0
+    ED_IN 48, 1
+    ED_IN 50, 2
+    ED_IN 58, 3
+    ED_IN 60, 4
+    ED_IN 68, 5
+    ED_IN 70, 6                 # in (c): flags only
+    ED_IN 78, 7                 # in a,(c): WZ = BC + 1
+
+.macro ED_OUT op, r
+EDOP \op
+    addiu rPC, rPC, 1
+  .if \r == 6
+    move  t1, zero              # out (c),0
+  .else
+    GETR  t1, \r
+  .endif
+    bal   port_out
+     move t0, rBC
+  .if \r == 7
+    addiu t0, rBC, 1
+    sh    t0, N64Z80_OFF_MEM_PTR(rZ)
+  .endif
+    DISPATCH
+.endm
+    ED_OUT 41, 0
+    ED_OUT 49, 1
+    ED_OUT 51, 2
+    ED_OUT 59, 3
+    ED_OUT 61, 4
+    ED_OUT 69, 5
+    ED_OUT 71, 6
+    ED_OUT 79, 7                # out (c),a: WZ = BC + 1
+
+# ini / ind (ini(), ind()): (HL) = port_in(BC); HL += a1; B - 1;
+# Z = (B == 0), N = 1, the rest kept; WZ = BC + 1 (ini) / BC - 2 (ind).
+# rPC is at the second opcode byte. bal.
+inx_core:
+    sw    ra, F_IO+0(sp)
+    sw    a1, F_IO+4(sp)
+    addiu rPC, rPC, 1           # the reference's PC at the call
+    bal   port_in
+     move t0, rBC
+    move  t0, rHL
+    bal   wr8
+     andi t1, v0, 0xFF
+    lw    a1, F_IO+4(sp)
+    addiu rPC, rPC, -1
+    b     ioblk_regs
+     lw   ra, F_IO+0(sp)
+
+# outi / outd (outi(), outd()): port_out(BC, (HL)) with B not yet
+# decremented; then as ini / ind.
+outx_core:
+    sw    ra, F_IO+0(sp)
+    sw    a1, F_IO+4(sp)
+    READ8 t1, rHL, t0
+    addiu rPC, rPC, 1
+    bal   port_out
+     move t0, rBC
+    lw    a1, F_IO+4(sp)
+    addiu rPC, rPC, -1
+    lw    ra, F_IO+0(sp)
+ioblk_regs:
+    addu  rHL, rHL, a1
+    andi  rHL, rHL, 0xFFFF
+    addiu rBC, rBC, -0x100
+    andi  rBC, rBC, 0xFFFF
+    srl   t0, rBC, 8
+    sltiu t0, t0, 1
+    sll   t0, t0, 6
+    andi  rF, rF, 0xBF
+    or    rF, rF, t0            # Z = (B == 0)
+    ori   rF, rF, 0x02          # N
+    addiu t0, rBC, 1
+    bgtz  a1, 1f
+     nop
+    addiu t0, rBC, -2
+1:  jr    ra
+     sh   t0, N64Z80_OFF_MEM_PTR(rZ)
+
+# The block forms: one iteration; while B != 0 go back to the instruction
+# itself (a loop edge), +5 except OTDR (the reference adds none there).
+.macro ED_IOBLK op, core, step, rep, extra
+EDOP \op
+    bal   \core
+     li   a1, \step
+  .if \rep
+    srl   t0, rBC, 8
+    beqz  t0, next1
+     nop
+    addiu rCYC, rCYC, \extra
+    b     jp_to
+     move t0, rPC0
+  .else
+    b     next1
+     nop
+  .endif
+.endm
+    ED_IOBLK A2, inx_core, 1, 0, 0      # ini
+    ED_IOBLK AA, inx_core, -1, 0, 0     # ind
+    ED_IOBLK B2, inx_core, 1, 1, 5      # inir
+    ED_IOBLK BA, inx_core, -1, 1, 5     # indr
+    ED_IOBLK A3, outx_core, 1, 0, 0     # outi
+    ED_IOBLK AB, outx_core, -1, 0, 0    # outd
+    ED_IOBLK B3, outx_core, 1, 1, 5     # otir
+    ED_IOBLK BB, outx_core, -1, 1, 0    # otdr: no +5
 
 # ===========================================================================
 # Dispatch tables, built from the handlers that exist: an opcode without one
