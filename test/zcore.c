@@ -91,7 +91,16 @@ static void diff_run(Run* r, uint32_t until) {
   z->int_pending = s->int_pending; z->nmi_pending = s->nmi_pending;
   z->irq_line = s->irq_line; z->wrote = s->wrote; z->wrote_any = s->wrote_any;
   z->cyc = s->cyc; z->irq_redeliver = s->irq_redeliver;
+#ifdef ZCORE_ASM
+  // Direct-write mode: the asm core stores to the direct pages itself.
+  static uintptr_t wmap[256];
+  for (int i = 0; i < 256; i++) wmap[i] = zd_direct_page(i) ? (uintptr_t)r->mem : 0;
+  n64z80_set_wmap(r->direct ? wmap : 0);
   r->nsteps = z80_run(z, until, &r->last_pc);
+  n64z80_set_wmap(0);
+#else
+  r->nsteps = z80_run(z, until, &r->last_pc);
+#endif
   s->pc = z->pc; s->sp = z->sp; s->ix = z->ix; s->iy = z->iy; s->mem_ptr = z->mem_ptr;
   s->a = z->a; s->f = z->f; s->b = z->b; s->c = z->c; s->d = z->d; s->e = z->e; s->h = z->h; s->l = z->l;
   s->a_ = z->a_; s->f_ = z->f_; s->b_ = z->b_; s->c_ = z->c_; s->d_ = z->d_; s->e_ = z->e_; s->h_ = z->h_; s->l_ = z->l_;
@@ -113,4 +122,7 @@ const zcore CAT(PFX, _core) = {
   .gen_int = z80_gen_int,
   .gen_nmi = z80_gen_nmi,
   .diff_run = diff_run,
+#ifdef ZCORE_ASM
+  .set_wmap = n64z80_set_wmap,
+#endif
 };

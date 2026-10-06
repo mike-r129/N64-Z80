@@ -32,6 +32,10 @@ typedef struct {
 
 #define ZD_EV_MAX 128
 
+// The pages the differential test's direct-write mode treats as direct
+// (stored by a core's write page map instead of write_byte).
+static inline int zd_direct_page(unsigned p) { return p >= 0xF8 || (p >= 0x40 && p < 0x60); }
+
 // One differential case for one core: the state goes in and comes back out,
 // `mem` is that core's private 64 KB image.
 typedef struct {
@@ -43,6 +47,7 @@ typedef struct {
   uint8_t dirty[256];       // pages written through the callback
   unsigned nsteps;
   uint16_t last_pc;
+  int direct;               // direct-write mode (zdiff_cfg.direct)
 } Run;
 
 typedef struct {
@@ -55,6 +60,9 @@ typedef struct {
   void (*gen_nmi)(z80*);
   // Differential test: load r->st, z80_run(until) once, store r->st.
   void (*diff_run)(Run* r, uint32_t until);
+  // Cores with a write page map (the asm core): pages with a nonzero entry
+  // are stored directly, without write_byte. NULL for the C cores.
+  void (*set_wmap)(const uintptr_t* wmap);
 } zcore;
 
 extern const zcore REF_core, NEW_core, ASM_core;

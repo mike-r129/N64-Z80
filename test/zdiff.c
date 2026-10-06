@@ -25,7 +25,6 @@ static uint8_t m1[65536] __attribute__((aligned(16)));
 static uint8_t m2[65536] __attribute__((aligned(16)));
 static Run ra, rb;
 
-static int direct_page(unsigned p) { return p >= 0xF8 || (p >= 0x40 && p < 0x60); }
 
 static void dump(const char* n, const St* s) {
   tlog("  %s pc=%04x sp=%04x af=%02x%02x bc=%02x%02x de=%02x%02x hl=%02x%02x ix=%04x iy=%04x wz=%04x"
@@ -38,7 +37,7 @@ static void dump(const char* n, const St* s) {
 static void filter_direct(Run* r) {
   int n = r->nev < ZD_EV_MAX ? r->nev : ZD_EV_MAX, k = 0;
   for (int i = 0; i < n; i++)
-    if (!(r->ev[i].kind == 1 && direct_page(r->ev[i].addr >> 8))) r->ev[k++] = r->ev[i];
+    if (!(r->ev[i].kind == 1 && zd_direct_page(r->ev[i].addr >> 8))) r->ev[k++] = r->ev[i];
   r->nev = k + (r->nev - n);
 }
 
@@ -77,6 +76,7 @@ long zdiff(const zcore* ref, const zcore* cand, const zdiff_cfg* cfg) {
     uint32_t until = s.cyc + ((rnd() & 1) ? 1 : 1 + rnd() % 400);
 
     memset(&ra, 0, sizeof ra); memset(&rb, 0, sizeof rb);
+    ra.direct = rb.direct = cfg->direct;
     ra.st = s; rb.st = s; ra.mem = m1; rb.mem = m2;
     ref->diff_run(&ra, until);
     cand->diff_run(&rb, until);
@@ -85,7 +85,7 @@ long zdiff(const zcore* ref, const zcore* cand, const zdiff_cfg* cfg) {
 
     int memd = 0;
     for (int pg = 0; pg < 256; pg++) {
-      if (!(ra.dirty[pg] | rb.dirty[pg] | (cfg->direct && direct_page(pg)))) continue;
+      if (!(ra.dirty[pg] | rb.dirty[pg] | (cfg->direct && zd_direct_page(pg)))) continue;
       if (memcmp(&m1[pg << 8], &m2[pg << 8], 256)) memd = 1;
       memcpy(&m1[pg << 8], &m0[pg << 8], 256);
       memcpy(&m2[pg << 8], &m0[pg << 8], 256);
