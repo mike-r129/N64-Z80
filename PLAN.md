@@ -345,7 +345,9 @@ number in `docs/measurements.md`)
     measured (§4.2), so decide with the trace bench.
   - Exit: baseline µs/instruction of the C core on the trace, inside the
     bench ROM.
-- **M1: asm skeleton, everything through the C fallback.**
+- **M1: asm skeleton, everything through the C fallback.** *Done
+  2026-10-06: differential and trace replays clean; full ZEXALL 67/67 exact
+  through `z80_run` (`docs/measurements.md`).*
   - Asm `z80_run` with register load/store, counter poisoning, the stop test
     and lazy R.
   - Every opcode calls the C reference for exactly one instruction

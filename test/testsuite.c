@@ -109,7 +109,7 @@ static void run_zex_groups(const zcore* core, const char* name, const uint8_t* i
           passed, ran);
   if (steps)
     tlog("[BENCH] %s %s subset: %lu ns/instr  (%llu instr, %lu ms)\n", core->name, name,
-         (unsigned long)(ticks * 1000000000ull / TICKS_PER_SECOND / steps), (unsigned long long)steps,
+         (unsigned long)((double)ticks * 1e9 / TICKS_PER_SECOND / steps), (unsigned long long)steps,
          (unsigned long)(ticks / (TICKS_PER_SECOND / 1000)));
 }
 
@@ -171,7 +171,7 @@ static void run_traces(void) {
       if (c < 2 && r.steps)
         tlog("[BENCH] %s trace %-20s %5lu ns/instr  %4lu cycles/instr  (%ld instr, %ld runs)\n",
              cores[c]->name, names[i],
-             (unsigned long)(r.ticks * 1000000000ull / TICKS_PER_SECOND / r.steps),
+             (unsigned long)((double)r.ticks * 1e9 / TICKS_PER_SECOND / r.steps),
              (unsigned long)(r.ticks * 2 / r.steps), r.steps, r.runs);
       if (cores[c] == &ASM_core)
         tlog("    ASM C-fallback instructions: %lu of %ld\n",
