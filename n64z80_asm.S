@@ -122,11 +122,16 @@ n64z80_prof_cnt: .space 4 * PROF_KEYS
 .endm
 
 # Next instruction, after the previous one's tail: run out / event check,
-# then the fetch.
-.macro DISPATCH
+# then the fetch. Handlers branch to one shared copy (dispatch) to keep the
+# core small for the icache; DISPATCH_INLINE is the copy itself.
+.macro DISPATCH_INLINE
     bgez  rCYC, slow_exit
      lbu  t0, 0(rPC)
     DISPATCH_FETCHED
+.endm
+.macro DISPATCH
+    b     dispatch
+     nop
 .endm
 
 # Fetch and jump, with t0 = the opcode (already loaded from 0(rPC)).
@@ -245,6 +250,9 @@ prof_sample:
     jr    ra
      sw   t3, %gp_rel(n64z80_prof_start)(gp)
 #endif
+
+dispatch:
+    DISPATCH_INLINE
 
 # ---------------------------------------------------------------------------
 # Slow exit: the tail of an instruction found rCYC >= 0 (out of cycles or
