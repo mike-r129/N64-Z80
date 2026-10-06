@@ -289,8 +289,38 @@ prof_sample:
      sw   t3, %gp_rel(n64z80_prof_start)(gp)
 #endif
 
+# Taken JR / JR cc / DJNZ: t1 = signed displacement; rPC at the opcode.
+# WZ = the new PC, +5 cycles (the reference's jr() and cond_jr()). Falls
+# through to jp_to, which falls through to the dispatch.
+jr_taken:
+    subu  t0, rPC, rBIAS
+    addiu t0, t0, 2
+    addu  t0, t0, t1
+    andi  t0, t0, 0xFFFF
+    sh    t0, N64Z80_OFF_MEM_PTR(rZ)
+    addiu rCYC, rCYC, 5
+
+# Control transfer to Z80 address t0 (16-bit): loop-edge test against rPC0,
+# remap, next instruction.
+jp_to:
+    subu  t2, rPC, rBIAS
+    xor   t2, t2, t0
+    srl   t2, t2, 8
+    bnez  t2, jp_remap
+     sltu t1, rPC0, t0
+    # Same 256-byte page as rPC, whose mapping (rBIAS, rLIM) is current even
+    # after a callback in this instruction (those remap rPC's page).
+    beqz  t1, slow_exit
+     addu rPC, rBIAS, t0
+
 dispatch:
     DISPATCH_INLINE
+
+jp_remap:
+    REMAP
+    beqz  t1, slow_exit
+     nop
+    DISPATCH
 
 # ---------------------------------------------------------------------------
 # Slow exit: the tail of an instruction found rCYC >= 0 (out of cycles or
@@ -724,35 +754,6 @@ push_t4:
     jr    t7
      nop
 
-# Control transfer to Z80 address t0 (16-bit): loop-edge test against rPC0,
-# remap, next instruction.
-jp_to:
-    subu  t2, rPC, rBIAS
-    xor   t2, t2, t0
-    srl   t2, t2, 8
-    bnez  t2, 1f
-     sltu t1, rPC0, t0
-    # Same 256-byte page as rPC, whose mapping (rBIAS, rLIM) is current even
-    # after a callback in this instruction (those remap rPC's page).
-    beqz  t1, slow_exit
-     addu rPC, rBIAS, t0
-    DISPATCH
-1:  REMAP
-    beqz  t1, slow_exit
-     nop
-    DISPATCH
-
-# Taken JR / JR cc / DJNZ: t1 = signed displacement; rPC at the opcode.
-# WZ = the new PC, +5 cycles (the reference's jr() and cond_jr()).
-jr_taken:
-    subu  t0, rPC, rBIAS
-    addiu t0, t0, 2
-    addu  t0, t0, t1
-    andi  t0, t0, 0xFFFF
-    sh    t0, N64Z80_OFF_MEM_PTR(rZ)
-    b     jp_to
-     addiu rCYC, rCYC, 5
-
 # Taken RET cc: pop, WZ = PC, +6 (cond_ret).
 ret_taken:
     POP16 t0, t1, t2
@@ -802,18 +803,18 @@ alu_and:
     and   rA, rA, t0
     addu  t1, rA, gp
     lbu   rF, %gp_rel(n64z80_sz53p)(t1)
-    ori   rF, rF, 0x10
-    DISPATCH
+    b     dispatch
+     ori  rF, rF, 0x10
 alu_xor:
     xor   rA, rA, t0
     addu  t1, rA, gp
-    lbu   rF, %gp_rel(n64z80_sz53p)(t1)
-    DISPATCH
+    b     dispatch
+     lbu  rF, %gp_rel(n64z80_sz53p)(t1)
 alu_or:
     or    rA, rA, t0
     addu  t1, rA, gp
-    lbu   rF, %gp_rel(n64z80_sz53p)(t1)
-    DISPATCH
+    b     dispatch
+     lbu  rF, %gp_rel(n64z80_sz53p)(t1)
 alu_cp:                           # sub without the result; Y/X from the operand
     andi  t9, t0, 0x28
     xori  t0, t0, 0xFF
@@ -863,9 +864,9 @@ OP \op
 OP \op
     READ8 t0, rHL, t1
     addiu rPC, rPC, 1
-    CHARGE \op
     SETR  \r, t0
-    DISPATCH
+    b     dispatch
+     CHARGE \op
 .endm
 
 .macro LD_HL_R op, r
@@ -1170,7 +1171,6 @@ OP \op
     ALU_R    A4, alu_and, 4     # and h
     ALU_R    A5, alu_and, 5     # and l
     ALU_HL   A6, alu_and        # and (hl)
-    ALU_R    A7, alu_and, 7     # and a
     ALU_R    A8, alu_xor, 0     # xor b
     ALU_R    A9, alu_xor, 1     # xor c
     ALU_R    AA, alu_xor, 2     # xor d
@@ -1178,7 +1178,6 @@ OP \op
     ALU_R    AC, alu_xor, 4     # xor h
     ALU_R    AD, alu_xor, 5     # xor l
     ALU_HL   AE, alu_xor        # xor (hl)
-    ALU_R    AF, alu_xor, 7     # xor a
     ALU_R    B0, alu_or, 0      # or b
     ALU_R    B1, alu_or, 1      # or c
     ALU_R    B2, alu_or, 2      # or d
@@ -1186,7 +1185,6 @@ OP \op
     ALU_R    B4, alu_or, 4      # or h
     ALU_R    B5, alu_or, 5      # or l
     ALU_HL   B6, alu_or         # or (hl)
-    ALU_R    B7, alu_or, 7      # or a
     ALU_R    B8, alu_cp, 0      # cp b
     ALU_R    B9, alu_cp, 1      # cp c
     ALU_R    BA, alu_cp, 2      # cp d
@@ -1286,6 +1284,28 @@ OP \op
     POP_RR   C1, rBC            # pop bc
     POP_RR   D1, rDE            # pop de
     POP_RR   E1, rHL            # pop hl
+
+OP A7                           # and a: A kept, F = sz53p[A] | H
+    addu  t1, rA, gp
+    lbu   rF, %gp_rel(n64z80_sz53p)(t1)
+    addiu rPC, rPC, 1
+    ori   rF, rF, 0x10
+    b     dispatch
+     CHARGE A7
+
+OP B7                           # or a: A kept, F = sz53p[A]
+    addu  t1, rA, gp
+    lbu   rF, %gp_rel(n64z80_sz53p)(t1)
+    addiu rPC, rPC, 1
+    b     dispatch
+     CHARGE B7
+
+OP AF                           # xor a: A = 0, F = sz53p[0] = Z | P
+    move  rA, zero
+    li    rF, 0x44
+    addiu rPC, rPC, 1
+    b     dispatch
+     CHARGE AF
 
 OP 00                           # nop
     addiu rPC, rPC, 1
