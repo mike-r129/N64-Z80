@@ -46,6 +46,8 @@ extern const uint8_t zex_zexall[], zex_zexall_end[];
 
 // n64z80.c: fallback entries whose asm fetch pointer disagreed with the rmap.
 extern uint32_t n64z80_fetch_mismatch;
+// n64z80_asm.S: instructions the asm core ran through the C fallback.
+extern uint32_t n64z80_nfallback;
 
 static int failures;
 
@@ -122,6 +124,44 @@ static void run_zex(const zcore* core) {
     run_zex_groups(core, "zexall", zex_zexall, zex_zexall_end - zex_zexall, zexall_expect);
 }
 
+#ifdef N64Z80_PROF
+// n64z80_asm.S profiling build: COP0 Count ticks and counts per key (opcode,
+// or 256 * group + second byte: 1 CB, 2 ED, 3 DD, 4 FD), sampled every 32nd
+// instruction.
+#define PROF_KEYS 1281
+extern uint32_t n64z80_prof_cyc[PROF_KEYS], n64z80_prof_cnt[PROF_KEYS];
+
+static void prof_reset(void) {
+  memset(n64z80_prof_cyc, 0, sizeof n64z80_prof_cyc);
+  memset(n64z80_prof_cnt, 0, sizeof n64z80_prof_cnt);
+}
+
+// The keys with the most cycles: share of all cycles, count, cycles each.
+static void prof_print(const char* name) {
+  static const char* grp[] = { "", "CB ", "ED ", "DD ", "FD " };
+  static uint8_t done[PROF_KEYS];
+  uint64_t tot = 0, n = 0;
+  for (int k = 0; k < PROF_KEYS; k++) { tot += n64z80_prof_cyc[k]; n += k < 1280 ? n64z80_prof_cnt[k] : 0; }
+  memset(done, 0, sizeof done);
+  tlog("[PROF] %s: %llu samples, %llu cycles, %lu cycles/instr (incl. a 5-instruction countdown)\n", name,
+       (unsigned long long)n, (unsigned long long)tot * 2, (unsigned long)(n ? tot * 2 / n : 0));
+  for (int row = 0; row < 48; row++) {
+    int best = -1;
+    for (int k = 0; k < PROF_KEYS; k++)
+      if (!done[k] && n64z80_prof_cnt[k] && (best < 0 || n64z80_prof_cyc[k] > n64z80_prof_cyc[best])) best = k;
+    if (best < 0) break;
+    done[best] = 1;
+    uint32_t c = n64z80_prof_cyc[best], m = n64z80_prof_cnt[best];
+    if (best == 1280)
+      tlog("[PROF]   run   ");
+    else
+      tlog("[PROF]   %s%02X%s", grp[best >> 8], best & 0xFF, best >> 8 ? "" : "   ");
+    tlog(" %5.2f%%  %8lu x %5lu cycles\n", 100.0 * c / (tot ? tot : 1), (unsigned long)m,
+         (unsigned long)(m ? 2ull * c / m : 0));
+  }
+}
+#endif
+
 static int ends_with(const char* s, const char* suf) {
   size_t a = strlen(s), b = strlen(suf);
   return a >= b && !strcmp(s + a - b, suf);
@@ -158,7 +198,14 @@ static void run_traces(void) {
     fclose(f);
     const zcore* cores[] = { &REF_core, &ASM_core, &MUT1_core };
     for (int c = 0; c < 3; c++) {
+      uint32_t fb0 = n64z80_nfallback;
+#ifdef N64Z80_PROF
+      if (cores[c] == &ASM_core) prof_reset();
+#endif
       replay_result r = replay(cores[c], tr, len, c < 2 ? 4 : 0);
+#ifdef N64Z80_PROF
+      if (cores[c] == &ASM_core) prof_print(names[i]);
+#endif
       char what[96];
       snprintf(what, sizeof what, "replay %.63s on %.15s", names[i], cores[c]->name);
       if (c < 2)
@@ -170,6 +217,9 @@ static void run_traces(void) {
              cores[c]->name, names[i],
              (unsigned long)((double)r.ticks * 1e9 / TICKS_PER_SECOND / r.steps),
              (unsigned long)(r.ticks * 2 / r.steps), r.steps, r.runs);
+      if (cores[c] == &ASM_core)
+        tlog("    ASM C-fallback instructions: %lu of %ld\n",
+             (unsigned long)(n64z80_nfallback - fb0), r.steps);
     }
     free(tr);
   }

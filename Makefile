@@ -21,6 +21,12 @@ ZDIFF_SEED ?= 1
 ZEX_MAX_STEPS ?= 5000000
 ZEX_SETS ?= 3
 ZEX_ONLY ?= 0
+# PROF=1: per-opcode cycle profile of the asm core on the traces (slower).
+PROF ?= 0
+ifeq ($(PROF),1)
+N64_CFLAGS += -DN64Z80_PROF
+N64_ASFLAGS += -DN64Z80_PROF
+endif
 
 # ZEX exercisers (GPLv2: fetched, not committed). See test/roms/README.md.
 ZEX_COMMIT := d64fe10a2274e5e40019b1086bf7d8990cbc5f23
@@ -34,11 +40,15 @@ SHA_zexall.cim := af7e5d86146d390a68440fb85668648f14a648602da29a1816d2ef11459411
 # fallback generated below).
 src := test/testsuite.c test/zdiff.c test/zex.c test/bench.c test/replay.c
 asm := test/zex_roms.S
-OBJS := $(BUILD_DIR)/n64z80.o $(BUILD_DIR)/n64z80_asm.o \
-	$(src:%.c=$(BUILD_DIR)/%.o) $(asm:%.S=$(BUILD_DIR)/%.o) $(CORES:%=$(BUILD_DIR)/zcore_%.o)
+# The core links last and its code starts on a 16 KB boundary (the icache
+# size; N64Z80_ICACHE_ALIGN), so an edit to the core never moves the
+# harness's code in the direct-mapped icache: timings stay comparable.
+OBJS := $(src:%.c=$(BUILD_DIR)/%.o) $(asm:%.S=$(BUILD_DIR)/%.o) $(CORES:%=$(BUILD_DIR)/zcore_%.o) \
+	$(BUILD_DIR)/n64z80.o $(BUILD_DIR)/n64z80_asm.o
+N64_ASFLAGS += -DN64Z80_ICACHE_ALIGN
 
 N64_CFLAGS += -I. -Itest -Ireference -I$(BUILD_DIR)
-N64_ASFLAGS += -I.
+N64_ASFLAGS += -I. -I$(BUILD_DIR)
 
 all: $(ROM).z64
 test: all
@@ -78,6 +88,12 @@ $(BUILD_DIR)/n64z80_ref.c: reference/z80.c
 	    -e 's/z->port_out(z, /n64z80_c_out(z, /' $< > $@
 	@! grep -n -e '->write_byte(' -e '->port_out(' $@ || (rm -f $@; false)
 $(BUILD_DIR)/n64z80.o: $(BUILD_DIR)/n64z80_ref.c
+
+# Cycle tables and sz53p for the asm handlers, taken from the reference.
+$(BUILD_DIR)/n64z80_tables.h: reference/z80.c tools/gen_tables.py
+	@mkdir -p $(dir $@)
+	python3 tools/gen_tables.py $< > $@
+$(BUILD_DIR)/n64z80_asm.o: $(BUILD_DIR)/n64z80_tables.h
 
 $(BUILD_DIR)/zcore_MUT%.o: test/zcore.c $(BUILD_DIR)/mut%/z80.c
 	@echo "    [CC] $< (MUT$*)"

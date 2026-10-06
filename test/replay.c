@@ -2,7 +2,8 @@
 // interface. It behaves exactly as that reference owner:
 //   - memory: fixed M1 ROM at 0x0000-0x7FFF, four banked windows (offsets
 //     from the header / BANK records), 2 KB work RAM at 0xF800; writes below
-//     0xF800 are ignored; every write and OUT sets cpu->wrote = 1;
+//     0xF800 are ignored; every write and OUT sets cpu->wrote = 1; a core
+//     with a write page map stores the work RAM directly (as mvs64 will);
 //   - port_in returns the recorded value, port_out checks it; after either,
 //     the IRQ/BANK records that follow are applied before the callback
 //     returns;
@@ -26,7 +27,7 @@ static uint8_t ram[0x800] __attribute__((aligned(16)));
 static uint32_t bank_off[4];
 static const uint32_t win_base[4] = { 0x8000, 0xC000, 0xE000, 0xF000 };
 static const uint32_t win_size[4] = { 0x4000, 0x2000, 0x1000, 0x0800 };
-static uintptr_t rmap[256];
+static uintptr_t rmap[256], wmap[256];
 static replay_result res;
 static int maxbad;
 
@@ -105,6 +106,10 @@ replay_result replay(const zcore* c, const uint8_t* trace, size_t len, int maxpr
   map_fill(0xF8, 0x100, ram);
   cpu->rmap = rmap; cpu->read_byte = rd; cpu->write_byte = wr;
   cpu->port_in = pin; cpu->port_out = pout; cpu->userdata = NULL;
+  if (core->set_wmap) {
+    for (int p = 0; p < 256; p++) wmap[p] = p >= 0xF8 ? (uintptr_t)ram - 0xF800 : 0;
+    core->set_wmap(wmap);
+  }
 
   while (t < tend && !res.ended) {
     uint8_t type = *t++;
@@ -152,5 +157,6 @@ replay_result replay(const zcore* c, const uint8_t* trace, size_t len, int maxpr
     }
   }
 out:
+  if (core->set_wmap) core->set_wmap(NULL);
   return res;
 }

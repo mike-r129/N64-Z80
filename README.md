@@ -10,10 +10,11 @@ The emulator is meant to run within a [libdragon](https://github.com/DragonMinde
 application. It is not compatible with other Nintendo 64 development
 environments.
 
-> **Status:** milestone M1 is done: the asm run loop (`n64z80_run`) is in
-> place and exact, but every opcode still executes in the C fallback, so it
-> is slower than the C core. M2 adds the first asm opcode handlers. Nothing
-> to integrate into mvs64 before M4. See [PLAN.md](PLAN.md).
+> **Status:** milestones M1 and M2 are done: every Z80 opcode has an asm
+> handler and the core is bit-exact (differential test, ZEXDOC/ZEXALL,
+> recorded Metal Slug traces), at 0.65 µs per instruction on the Metal Slug
+> trace, 2.5x the C core. M3/M4 are speed work (target 0.45 µs). Nothing to
+> integrate into mvs64 before M4. See [PLAN.md](PLAN.md).
 
 ## Features
 

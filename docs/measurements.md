@@ -52,6 +52,13 @@ Conventions:
 | 2026-10-05 | 7fbb914 | ″ | ares | scan loop: REF `z80_run` / ASM `n64z80_run` (M1) / ASM `n64z80_step` (C) | 1,080 / 3,361 / 1,174 ns/instr |
 | 2026-10-05 | 7fbb914 | ″ | ares | ASM ZEX subset through `z80_run` (75.7M instr) | 2,978 ns/instr |
 | 2026-10-06 | b8d8ce9 | testsuite `ZEX_ONLY=1 ZEX_SETS=2 ZEX_MAX_STEPS=0` (M1) | ares | **full ZEXALL on ASM through `z80_run`**, all 67 groups (5,764,172,722 instr) | **67/67 exact** (steps, cycles, CRC); 18,447,860 ms N64 time (3.2 µs/instr) |
+| 2026-10-06 | 62f7839 | testsuite, defaults (M2: an asm handler for every opcode) | ares | zdiff REF vs ASM 20,000 cases / direct-write 5,000; controls; replays; prelim, ZEXDOC and ZEXALL subsets through `z80_run` | 0 / 0 mismatches; MUT1-4 caught; replays clean, 0 C-fallback instructions; ZEX exact |
+| 2026-10-06 | 62f7839 | testsuite `ZEX_SETS=0 ZDIFF_CASES=2000` (layout-pinned timing build) | ares | **replay `mslug_36s_10s`: REF / ASM** | **1,630 / 652 ns/instr (152 / 61 cycles), 2.5x** |
+| 2026-10-06 | 62f7839 | ″ | ares | replay `mslug_42s_1s`: REF / ASM | 1,627 / 655 ns/instr |
+| 2026-10-06 | 62f7839 | ″ | ares | replay `samsho2_30s_5s`: REF / ASM | 1,959 / 985 ns/instr |
+| 2026-10-06 | 62f7839 | testsuite, defaults | ares | ASM ZEXDOC + ZEXALL subsets through `z80_run` (75.7M instr) | 891 ns/instr |
+| 2026-10-06 | 796c834 | `ZEX_SETS=0 ZDIFF_CASES=4000` (layout not yet pinned) | ares | Metal Slug / samsho2 trace, ASM: inline dispatch tails -> shared `dispatch` | 746 -> 668 / 1,512 -> 1,125 ns/instr |
+| 2026-10-06 | 4a71b1b | `ZEX_SETS=0 ZDIFF_CASES=2000`, layout pinned | ares | hot/cold sections, Metal Slug / samsho2 | 681 -> 662 / 1,062 -> 971 ns/instr |
 
 ## Notes on the rows
 
@@ -94,3 +101,7 @@ Conventions:
   core (its synthetic loops are unchanged at 1,080 / 1,412 ns): another
   layout effect on the larger replay working set, so speedups are always
   quoted against REF in the same build.
+- **2026-10-06, M2.** Timings after this point come from builds with the
+  core linked last on a 16 KB boundary; before that, any core edit moved the
+  harness code and shifted every timing (REF included) by up to 15%. Only
+  compare rows built with the same test knobs.
