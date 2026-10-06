@@ -222,7 +222,9 @@ n64z80_prof_cnt: .space 4 * PROF_KEYS
     .globl n64z80_run
     .type n64z80_run, @function
     .balign 32
-n64z80_run:
+# Entry of n64z80_run and n64z80_step: save the callee-saved registers,
+# a1 = until, a2 = last_pc (0 for a step), rebuild ev_mask, load the state.
+.macro PROLOGUE
     addiu sp, sp, -FRAME
     sd    s0, F_S0+0(sp)
     sd    s1, F_S0+8(sp)
@@ -258,9 +260,28 @@ n64z80_run:
 
     jal   load_state
      nop
+.endm
+
+n64z80_run:
+    PROLOGUE
     # The first instruction runs whatever the budget.
     b     pre_insn
      nop
+
+# void n64z80_step(z80* z): one instruction (or HALT's NOP) and the
+# interrupt service, as a run with until = cyc and no last_pc: no IRQ
+# re-assertion, `wrote` only set, wrote_any untouched. The step also
+# rebuilds ev_mask, which the reference's z80_step leaves alone (it only
+# caches IFF1 and the constant lanes, so the service test is the same).
+    .globl n64z80_step
+    .type n64z80_step, @function
+n64z80_step:
+    lw    a1, N64Z80_OFF_CYC(a0)
+    move  a2, zero
+    PROLOGUE
+    b     pre_halt
+     nop
+    .size n64z80_step, .-n64z80_step
 
 #ifdef N64Z80_PROF
 # Sample event (t0 = the opcode being dispatched): close the open sample and
@@ -375,16 +396,17 @@ pre_insn:
      lbu  t0, N64Z80_OFF_IRQ_LINE(rZ)
     lbu   t1, N64Z80_OFF_IFF1(rZ)
     lbu   t2, N64Z80_OFF_INT_PENDING(rZ)
-    beqz  t0, 1f                     # irq_line && iff1 && !int_pending
+    beqz  t0, pre_halt               # irq_line && iff1 && !int_pending
      li   t3, 1
-    beqz  t1, 1f
+    beqz  t1, pre_halt
      lw   t0, N64Z80_OFF_IRQ_REDELIVER(rZ)
-    bnez  t2, 1f
+    bnez  t2, pre_halt
      nop
     sb    t3, N64Z80_OFF_INT_PENDING(rZ)   # z80_gen_int(z, z->int_data)
     addiu t0, t0, 1
     sw    t0, N64Z80_OFF_IRQ_REDELIVER(rZ)
-1:  lbu   t0, N64Z80_OFF_HALTED(rZ)
+pre_halt:
+    lbu   t0, N64Z80_OFF_HALTED(rZ)
     beqz  t0, 2f
      lw   t0, %gp_rel(n64z80_cbase)(gp)
     # HALT: a 4-cycle NOP in place (cyc_00[0x00]; R via rN), then its tail.
@@ -545,15 +567,17 @@ stop:
 #endif
     jal   save_state
      nop
+    lw    t2, %gp_rel(n64z80_lastpc)(gp)
     lw    t0, %gp_rel(n64z80_lastw)(gp)
-    xor   t1, t0, rN
+    beqz  t2, step_stop
+     xor  t1, t0, rN
     sltiu t1, t1, 1
     sb    t1, N64Z80_OFF_WROTE(rZ)
     sltu  t0, zero, t0
     sb    t0, N64Z80_OFF_WROTE_ANY(rZ)
-    lw    t0, %gp_rel(n64z80_lastpc)(gp)
-    sh    rPC0, 0(t0)
+    sh    rPC0, 0(t2)
     move  v0, rN
+ret_regs:
     ld    s0, F_S0+0(sp)
     ld    s1, F_S0+8(sp)
     ld    s2, F_S0+16(sp)
@@ -566,6 +590,11 @@ stop:
     ld    ra, F_RA(sp)
     jr    ra
      addiu sp, sp, FRAME
+step_stop:
+    bnez  t1, ret_regs              # no write in this instruction
+     li   t1, 1
+    b     ret_regs
+     sb   t1, N64Z80_OFF_WROTE(rZ)
     .size n64z80_run, .-n64z80_run
 
 # void n64z80_set_wmap(const uintptr_t* wmap)

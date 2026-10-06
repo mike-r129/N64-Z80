@@ -1,6 +1,6 @@
-// C side of the n64z80 core: init, z80_step, and the C fallback that
-// n64z80_asm.S calls for every instruction it has no handler for (in M1:
-// all of them) and for interrupt service.
+// C side of the n64z80 core: init, and the C fallback that n64z80_asm.S
+// calls for the instructions it has no fast path for (prefix chains, an
+// instruction straddling a mapping boundary) and for IM 0 interrupts.
 //
 // The fallback is the reference core itself: build/n64z80_ref.c is
 // reference/z80.c with its write_byte / port_out call sites rewritten to the
@@ -62,6 +62,5 @@ void n64z80_c_service(z80* z) {
 }
 
 void n64z80_init(z80* z) { n64z80_ref_init(z); }
-void n64z80_step(z80* z) { n64z80_ref_step(z); }
 void n64z80_gen_int(z80* z, uint8_t data) { n64z80_ref_gen_int(z, data); }
 void n64z80_gen_nmi(z80* z) { n64z80_ref_gen_nmi(z); }
