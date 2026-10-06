@@ -59,6 +59,12 @@ Conventions:
 | 2026-10-06 | 62f7839 | testsuite, defaults | ares | ASM ZEXDOC + ZEXALL subsets through `z80_run` (75.7M instr) | 891 ns/instr |
 | 2026-10-06 | 796c834 | `ZEX_SETS=0 ZDIFF_CASES=4000` (layout not yet pinned) | ares | Metal Slug / samsho2 trace, ASM: inline dispatch tails -> shared `dispatch` | 746 -> 668 / 1,512 -> 1,125 ns/instr |
 | 2026-10-06 | 4a71b1b | `ZEX_SETS=0 ZDIFF_CASES=2000`, layout pinned | ares | hot/cold sections, Metal Slug / samsho2 | 681 -> 662 / 1,062 -> 971 ns/instr |
+| 2026-10-06 | f86f029 | `ZEX_SETS=0 ZDIFF_CASES=2000`, layout pinned | ares | hot/cold as one section (cold right after hot), port I/O and EI/DI hot; Metal Slug / samsho2 | 652 -> 616 / 985 -> 1,013 ns/instr |
+| 2026-10-06 | f86f029 + pad | ″ | ares | core data padded by 1 / 2 / 4 KB: Metal Slug ASM (REF) | 623 (1,659) / 625 (2,026) / 631 (1,596) ns/instr |
+| 2026-10-06 | 8aec49d | ″ | ares | R's prefix increment in `$at`; Metal Slug / samsho2 | 616 -> 584 / 1,013 -> 1,001 ns/instr |
+| 2026-10-06 | 8aec49d + 32 instr | ″ | ares | ares cost model, 32 instructions added to the run entry, scan loop (4 instr/run): nop / lw / lw+use | +8.0 / +16.0 / +24.0 cycles/instr (1 / 2 / 3 cycles each) |
+| 2026-10-06 | 9341700 | ″ | ares | cheaper run entry/exit, delay slots filled: Metal Slug / samsho2 / scan loop | 584 -> **577** / 1,001 -> 1,032 ns/instr / 81.4 -> 73.6 cycles/instr |
+| 2026-10-06 | 9341700 | testsuite, defaults (M3) | ares | zdiff REF vs ASM 20,000 / direct-write 5,000; controls; replays; prelim, ZEXDOC and ZEXALL subsets through `z80_run` | 0 / 0 mismatches; MUT1-4 caught; replays clean; ZEX exact |
 
 ## Notes on the rows
 

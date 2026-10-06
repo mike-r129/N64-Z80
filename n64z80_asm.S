@@ -20,7 +20,7 @@
 #     restores cbase = until and services events in the reference's order.
 #   - rN counts instructions, 1-based: dispatch increments it, so during
 #     instruction k (and its interrupt service) rN == k. It gives the return
-#     value, lazy R (R = rhi | ((rbase + rN) & 0x7F)) and `wrote` (the write
+#     value, lazy R (R = rhi | ((rRB + rN) & 0x7F)) and `wrote` (the write
 #     hooks store rN in lastw: wrote = lastw == rN, wrote_any = lastw != 0).
 #   - rPC0 is the Z80 address of the current instruction (pc0): the stop
 #     test is pc <= pc0 after interrupt service, and *last_pc.
@@ -52,6 +52,7 @@
 #define rLIM   a3    // fast fetch while rPC < rLIM
 #define rRMAP  a2    // z->rmap (reloaded after every C call)
 #define rPC0   t8    // Z80 address of the current instruction
+#define rRB    $at   // rbase (lazy R); C clobbers it: kept in R across calls
 
 # Stack frame: o64 argument home area, callee-saved registers, rZ, and the
 # registers wr8 keeps across a write callback.
@@ -60,7 +61,7 @@
 #define F_RA    104
 #define F_Z     112
 #define F_RA2   120   // call_c's own return address
-#define F_WR    128   // wr8: ra, t2-t7, t8, Z80 PC (9 words); port_in/out: ra
+#define F_WR    128   // wr8: ra, t2-t7, t8, Z80 PC, rRB (10 words); port_in/out: ra
 #define F_IO    168   // in_bc / inx_core / outx_core: ra, a1
 
 # ---------------------------------------------------------------------------
@@ -72,8 +73,7 @@ n64z80_until:   .word 0     # the run's `until`
 n64z80_cbase:   .word 0     # cyc = cbase + rCYC
 n64z80_insn:    .word 0     # rN, published for the C write hooks
 n64z80_lastw:   .word 0     # rN of the last instruction that wrote (0: none)
-n64z80_rbase:   .word 0     # R = rhi | ((rbase + rN) & 0x7F)
-n64z80_rhi:     .word 0
+n64z80_rhi:     .word 0     # R = rhi | ((rRB + rN) & 0x7F)
 n64z80_pc0:     .word 0     # rPC0 across C calls
 n64z80_lastpc:  .word 0     # the run's last_pc pointer
 n64z80_wmap:    .word 0     # write page map (n64z80_set_wmap), or 0
@@ -106,16 +106,18 @@ n64z80_prof_cnt: .space 4 * PROF_KEYS
 #endif
 
 # Code placement. The handlers of the most frequent instructions, the
-# dispatch support and the run loop go in .text.n64z80hot, so they share
-# icache lines instead of being spread over the whole core; everything else
-# goes in .text.n64z80cold. The hot list is the Metal Slug sound driver's
-# opcode profile (trace mslug_36s_10s, docs/measurements.md): every opcode
-# above ~0.3% of the instructions.
+# dispatch support and the run loop go first in .text.n64z80 (subsection 0),
+# so they share icache lines instead of being spread over the whole core;
+# everything else follows directly (subsection 1). The hot list is the Metal
+# Slug sound driver's opcode profile (trace mslug_36s_10s,
+# docs/measurements.md): every opcode above ~0.3% of the instructions.
 .macro HOT
-    .section .text.n64z80hot, "ax", @progbits
+    .section .text.n64z80, "ax", @progbits
+    .subsection 0
 .endm
 .macro COLD
-    .section .text.n64z80cold, "ax", @progbits
+    .section .text.n64z80, "ax", @progbits
+    .subsection 1
 .endm
 .macro PLACE name
   .ifdef HOT_\name
@@ -133,7 +135,10 @@ n64z80_prof_cnt: .space 4 * PROF_KEYS
     .irp op, 5E,C8,C2,DE,91,22,B0,FE,0F,32,87,AF,00,15,79,29,7A,F2,2A,C3
     .set HOT_\op, 1
     .endr
-    .irp op, FD_CB,FD_21,FD_7E,FD_56,FD_6E,FD_2A,FD_77,FD_5E,DD_21
+    .irp op, FD_CB,FD_21,FD_7E,FD_56,FD_6E,FD_2A,FD_77,FD_5E,DD_21,DD_CB
+    .set HOT_\op, 1
+    .endr
+    .irp op, DB,D3,F3,FB          # port I/O and EI/DI: few, but costly
     .set HOT_\op, 1
     .endr
     .irp op, ED_5B,ED_42,ED_52,ED_53,ED_51,ED_59,ED_78,CB_57,CB_66
@@ -310,7 +315,7 @@ jp_to:
      sltu t1, rPC0, t0
     # Same 256-byte page as rPC, whose mapping (rBIAS, rLIM) is current even
     # after a callback in this instruction (those remap rPC's page).
-    beqz  t1, slow_exit
+    beqz  t1, edge_exit
      addu rPC, rBIAS, t0
 
 dispatch:
@@ -318,7 +323,7 @@ dispatch:
 
 jp_remap:
     REMAP
-    beqz  t1, slow_exit
+    beqz  t1, edge_exit
      nop
     DISPATCH
 
@@ -422,11 +427,9 @@ refetch:
     COLD
     .balign 4
 op_fallback:
-    lw    t0, %gp_rel(n64z80_rbase)(gp)
     lw    t1, %gp_rel(n64z80_nfallback)(gp)
-    addiu t0, t0, -1
+    addiu rRB, rRB, -1
     addiu t1, t1, 1
-    sw    t0, %gp_rel(n64z80_rbase)(gp)
     sw    t1, %gp_rel(n64z80_nfallback)(gp)
     move  a1, rPC
     la    t9, n64z80_c_exec
@@ -460,26 +463,23 @@ call_c:
 # Write the registers back to the struct: pc = rPC - rBIAS, cyc, R.
 # Clobbers t0, t1.
 save_state:
+    sll   t0, rBC, 16
+    or    t0, t0, rDE
+    swl   t0, N64Z80_OFF_B(rZ)      # B C D E
+    swr   t0, N64Z80_OFF_E(rZ)
     sb    rA, N64Z80_OFF_A(rZ)
     sb    rF, N64Z80_OFF_F(rZ)
     srl   t0, rHL, 8
     sb    t0, N64Z80_OFF_H(rZ)
     sb    rHL, N64Z80_OFF_L(rZ)
-    srl   t0, rDE, 8
-    sb    t0, N64Z80_OFF_D(rZ)
-    sb    rDE, N64Z80_OFF_E(rZ)
-    srl   t0, rBC, 8
-    sb    t0, N64Z80_OFF_B(rZ)
-    sb    rBC, N64Z80_OFF_C(rZ)
     sh    rSP, N64Z80_OFF_SP(rZ)
     subu  t0, rPC, rBIAS
     sh    t0, N64Z80_OFF_PC(rZ)
     lw    t0, %gp_rel(n64z80_cbase)(gp)
     addu  t0, t0, rCYC
     sw    t0, N64Z80_OFF_CYC(rZ)
-    lw    t0, %gp_rel(n64z80_rbase)(gp)
     lw    t1, %gp_rel(n64z80_rhi)(gp)
-    addu  t0, t0, rN
+    addu  t0, rRB, rN
     andi  t0, t0, 0x7F
     or    t0, t0, t1
     sb    t0, N64Z80_OFF_R(rZ)
@@ -489,20 +489,15 @@ save_state:
 # Load the registers from the struct, rebase R and the cycle counter, map PC.
 # Clobbers t0-t2.
 load_state:
+    lwl   t0, N64Z80_OFF_B(rZ)      # B C D E (big endian, unaligned)
+    lwr   t0, N64Z80_OFF_E(rZ)
+    lwl   t1, N64Z80_OFF_H(rZ)      # H L A' B'
+    lwr   t1, N64Z80_OFF_H+3(rZ)
     lbu   rA, N64Z80_OFF_A(rZ)
     lbu   rF, N64Z80_OFF_F(rZ)
-    lbu   t0, N64Z80_OFF_H(rZ)
-    lbu   rHL, N64Z80_OFF_L(rZ)
-    sll   t0, t0, 8
-    or    rHL, rHL, t0
-    lbu   t0, N64Z80_OFF_D(rZ)
-    lbu   rDE, N64Z80_OFF_E(rZ)
-    sll   t0, t0, 8
-    or    rDE, rDE, t0
-    lbu   t0, N64Z80_OFF_B(rZ)
-    lbu   rBC, N64Z80_OFF_C(rZ)
-    sll   t0, t0, 8
-    or    rBC, rBC, t0
+    srl   rBC, t0, 16
+    andi  rDE, t0, 0xFFFF
+    srl   rHL, t1, 16
     lhu   rSP, N64Z80_OFF_SP(rZ)
     lw    rRMAP, N64Z80_OFF_RMAP(rZ)
     lw    t0, N64Z80_OFF_CYC(rZ)
@@ -511,14 +506,20 @@ load_state:
     lbu   t0, N64Z80_OFF_R(rZ)
     andi  t1, t0, 0x80
     sw    t1, %gp_rel(n64z80_rhi)(gp)
-    subu  t0, t0, rN
-    sw    t0, %gp_rel(n64z80_rbase)(gp)
+    subu  rRB, t0, rN
     lhu   t0, N64Z80_OFF_PC(rZ)
     REMAP
     jr    ra
      nop
 
 # ---------------------------------------------------------------------------
+# A control transfer found a loop edge. rCYC < 0 means not poisoned: cbase
+# is `until` and events & ev_mask is zero (every change that can make it
+# nonzero poisons), so slow_exit would only reach the stop test: stop now.
+edge_exit:
+    bgez  rCYC, slow_exit
+     nop
+
 # End of the run (cbase == until here): write everything back.
 stop:
 #ifdef N64Z80_PROF
@@ -715,6 +716,7 @@ wr8_cb:
     sw    t8, F_WR+28(sp)
     subu  t9, rPC, rBIAS
     sw    t9, F_WR+32(sp)
+    sw    rRB, F_WR+36(sp)
     lw    t9, %gp_rel(n64z80_cbase)(gp)
     addu  t9, t9, rCYC
     sw    t9, N64Z80_OFF_CYC(rZ)
@@ -725,6 +727,7 @@ wr8_cb:
      lw   a0, N64Z80_OFF_USERDATA(rZ)
     lw    rZ, F_Z(sp)
     lw    rRMAP, N64Z80_OFF_RMAP(rZ)
+    lw    rRB, F_WR+36(sp)
     lw    t0, F_WR+32(sp)
     REMAP
     POISON_IF_EVENTS
@@ -775,21 +778,21 @@ call_taken:
 # ALU on A with operand t0 (rPC advanced, cycles charged).
 alu_add:
     ADDB  rA, t0, zero
-    andi  rA, t2, 0xFF
-    DISPATCH
+    b     dispatch
+     andi  rA, t2, 0xFF
 alu_adc:
     andi  t1, rF, 1
     ADDB  rA, t0, t1
-    andi  rA, t2, 0xFF
-    DISPATCH
+    b     dispatch
+     andi  rA, t2, 0xFF
 alu_sub:                          # subb: addb(a, ~b, 1), then C/H flipped, N
     xori  t0, t0, 0xFF
     li    t1, 1
     ADDB  rA, t0, t1
     xori  rF, rF, 0x11
     ori   rF, rF, 0x02
-    andi  rA, t2, 0xFF
-    DISPATCH
+    b     dispatch
+     andi  rA, t2, 0xFF
 alu_sbc:
     andi  t1, rF, 1
     xori  t1, t1, 1
@@ -797,8 +800,8 @@ alu_sbc:
     ADDB  rA, t0, t1
     xori  rF, rF, 0x11
     ori   rF, rF, 0x02
-    andi  rA, t2, 0xFF
-    DISPATCH
+    b     dispatch
+     andi  rA, t2, 0xFF
 alu_and:
     and   rA, rA, t0
     addu  t1, rA, gp
@@ -823,8 +826,8 @@ alu_cp:                           # sub without the result; Y/X from the operand
     xori  rF, rF, 0x11
     ori   rF, rF, 0x02
     andi  rF, rF, 0xD7
-    or    rF, rF, t9
-    DISPATCH
+    b     dispatch
+     or    rF, rF, t9
 
 # INC / DEC of byte t0: t2 = result byte, F as the reference's inc()/dec()
 # (C kept). bal; clobbers t1, t3-t7, t9, v0.
@@ -856,8 +859,8 @@ OP \op
     GETR  t0, \s
     SETR  \d, t0
     addiu rPC, rPC, 1
-    CHARGE \op
-    DISPATCH
+    b     dispatch
+     CHARGE \op
 .endm
 
 .macro LD_R_HL op, r
@@ -936,8 +939,8 @@ OP \op
 OP \op
     FETCH16 \rr, t0
     addiu rPC, rPC, 3
-    CHARGE \op
-    DISPATCH
+    b     dispatch
+     CHARGE \op
 .endm
 
 .macro INC_RR op, rr
@@ -945,8 +948,8 @@ OP \op
     addiu \rr, \rr, 1
     andi  \rr, \rr, 0xFFFF
     addiu rPC, rPC, 1
-    CHARGE \op
-    DISPATCH
+    b     dispatch
+     CHARGE \op
 .endm
 
 .macro DEC_RR op, rr
@@ -954,8 +957,8 @@ OP \op
     addiu \rr, \rr, -1
     andi  \rr, \rr, 0xFFFF
     addiu rPC, rPC, 1
-    CHARGE \op
-    DISPATCH
+    b     dispatch
+     CHARGE \op
 .endm
 
 # ADD HL,rr (addhl): S Z P kept; H, C and Y/X from the high byte; N = 0;
@@ -979,8 +982,8 @@ OP \op
     or    rF, rF, t4
     andi  rHL, t0, 0xFFFF
     addiu rPC, rPC, 1
-    CHARGE \op
-    DISPATCH
+    b     dispatch
+     CHARGE \op
 .endm
 
 # Condition test: t3 = F & mask; `set` = 1 if the condition holds when the
@@ -1061,8 +1064,8 @@ OP \op
 OP \op
     POP16 \rr, t0, t1
     addiu rPC, rPC, 1
-    CHARGE \op
-    DISPATCH
+    b     dispatch
+     CHARGE \op
 .endm
 
 # ---------------------------------------------------------------------------
@@ -1322,8 +1325,8 @@ OP 02                           # ld (bc),a: WZ = A << 8 | (BC + 1) & 0xFF
     andi  t0, t0, 0xFF
     sll   t1, rA, 8
     or    t0, t0, t1
-    sh    t0, N64Z80_OFF_MEM_PTR(rZ)
-    DISPATCH
+    b     dispatch
+     sh    t0, N64Z80_OFF_MEM_PTR(rZ)
 
 OP 12                           # ld (de),a
     CHARGE 12
@@ -1335,8 +1338,8 @@ OP 12                           # ld (de),a
     andi  t0, t0, 0xFF
     sll   t1, rA, 8
     or    t0, t0, t1
-    sh    t0, N64Z80_OFF_MEM_PTR(rZ)
-    DISPATCH
+    b     dispatch
+     sh    t0, N64Z80_OFF_MEM_PTR(rZ)
 
 OP 0A                           # ld a,(bc): WZ = BC + 1
     READ8 rA, rBC, t0
@@ -1657,11 +1660,11 @@ OP 36                           # ld (hl),n
 # ===========================================================================
 # Prefixed instructions (CB, DD, ED, FD, DD CB / FD CB).
 #
-# A prefix handler changes no state: it reads the next opcode byte and jumps
-# through that prefix's table. The handler there charges the instruction's
-# cycles and its second R increment (RBUMP; rN already counts the first),
-# so any table entry can instead be pfx_fallback, which rewinds to rPC0 and
-# runs the whole instruction in C. One prefix with its operands is at most
+# A prefix handler only counts R's second increment (rRB; rN already counts
+# the first), reads the next opcode byte and jumps through that prefix's
+# table. The handler there charges the instruction's cycles, so any table
+# entry can instead be pfx_fallback, which takes the increment back,
+# rewinds to rPC0 and runs the whole instruction in C. One prefix with its operands is at most
 # 4 bytes, which the dispatch's limit check already covers; prefix chains
 # (DD DD, FD ED, ...) go to C.
 
@@ -1670,14 +1673,7 @@ pfx_fallback:
     move  t0, rPC0
     REMAP
     b     op_fallback
-     nop
-
-# R's second increment for a prefixed instruction. Clobbers t9.
-.macro RBUMP
-    lw    t9, %gp_rel(n64z80_rbase)(gp)
-    addiu t9, t9, 1
-    sw    t9, %gp_rel(n64z80_rbase)(gp)
-.endm
+     addiu rRB, rRB, -1
 
 # Jump through `table` on the byte at rPC+1 (t0), with rPC advanced to it.
 .macro PREFIX table, group
@@ -1691,7 +1687,7 @@ pfx_fallback:
     addu  t1, t1, gp
     lw    t1, %gp_rel(\table)(t1)
     jr    t1
-     nop
+     addiu rRB, rRB, 1
 .endm
 
 OP CB
@@ -1704,12 +1700,11 @@ OP FD
     PREFIX n64z80_fdtab, 4
 
 # DD/FD before an opcode exec_opcode_ddfd does not handle itself: it runs as
-# the unprefixed opcode (t0 = it, rPC at it) after cyc_ddfd[op] and R + 1.
+# the unprefixed opcode (t0 = it, rPC at it) after cyc_ddfd[op].
     HOT
 ddfd_base:
     addu  t1, t0, gp
     lbu   t1, %gp_rel(n64z80_cycdd)(t1)
-    RBUMP
     addu  rCYC, rCYC, t1
     sll   t0, t0, 2
     addu  t0, t0, gp
@@ -1809,7 +1804,6 @@ rot_flags:
     PLACE CB_\op
 op_CB_\op:
     addiu rCYC, rCYC, 8
-    RBUMP
 .endm
 
 .macro CB_ROT op, core, r
@@ -1891,7 +1885,6 @@ CBOP \op
 .macro XC_ROT op, core, r
     COLD
 op_XC_\op:
-    RBUMP
     sh    t5, N64Z80_OFF_MEM_PTR(rZ)
     READ8 t0, t5, t1
     bal   \core
@@ -1913,7 +1906,6 @@ op_XC_\o4:
 op_XC_\o5:
 op_XC_\o6:
 op_XC_\o7:
-    RBUMP
     sh    t5, N64Z80_OFF_MEM_PTR(rZ)
     READ8 t0, t5, t1
     andi  t2, t0, (1 << \y)
@@ -1927,7 +1919,6 @@ op_XC_\o7:
 .macro XC_RES_SET op, set, y, r
     COLD
 op_XC_\op:
-    RBUMP
     sh    t5, N64Z80_OFF_MEM_PTR(rZ)
     READ8 t0, t5, t1
   .if \set
@@ -1961,7 +1952,6 @@ xc_write:
     PLACE \p\()_\op
 op_\p\()_\op:
     addiu rCYC, rCYC, CYCDD_\op
-    RBUMP
 .endm
 
 # dst = (IZ + d) & 0xFFFF with d at rPC+1, WZ = dst (the reference's IZD).
@@ -2288,7 +2278,6 @@ op_\p\()_CB:
     PLACE ED_\op
 op_ED_\op:
     addiu rCYC, rCYC, CYCED_\op
-    RBUMP
 .endm
 
 # Every ED opcode exec_opcode_ed doesn't implement: an 8-cycle NOP
@@ -2296,7 +2285,6 @@ op_ED_\op:
     COLD
 ed_nop:
     addiu rCYC, rCYC, 8
-    RBUMP
     b     dispatch
      addiu rPC, rPC, 1
 
@@ -2398,7 +2386,6 @@ op_ED_6C:
 op_ED_74:
 op_ED_7C:
     addiu rCYC, rCYC, CYCED_44
-    RBUMP
     xori  t0, rA, 0xFF
     li    t1, 1
     ADDB  zero, t0, t1
@@ -2430,8 +2417,7 @@ EDOP 47                           # ld i,a
 EDOP 4F                           # ld r,a: R = A after the instruction
     andi  t0, rA, 0x80
     sw    t0, %gp_rel(n64z80_rhi)(gp)
-    subu  t0, rA, rN
-    sw    t0, %gp_rel(n64z80_rbase)(gp)
+    subu  rRB, rA, rN
     b     dispatch
      addiu rPC, rPC, 1
 
@@ -2440,9 +2426,8 @@ EDOP 57                           # ld a,i
     b     ld_a_ir
      lbu  rA, N64Z80_OFF_I(rZ)
 EDOP 5F                           # ld a,r (R after both increments)
-    lw    t0, %gp_rel(n64z80_rbase)(gp)
     lw    t1, %gp_rel(n64z80_rhi)(gp)
-    addu  t0, t0, rN
+    addu  t0, rRB, rN
     andi  t0, t0, 0x7F
     or    rA, t0, t1
 ld_a_ir:
@@ -2470,7 +2455,6 @@ op_ED_6D:
 op_ED_75:
 op_ED_7D:
     addiu rCYC, rCYC, CYCED_45
-    RBUMP
     lbu   t0, N64Z80_OFF_IFF2(rZ)
     sltu  t0, zero, t0            # bool: any nonzero byte is true
     sb    t0, N64Z80_OFF_IFF1(rZ)
@@ -3174,8 +3158,8 @@ OP DB
     lw    t1, F_WR+4(sp)
     addiu t0, rA, 1
     or    t0, t0, t1
-    sh    t0, N64Z80_OFF_MEM_PTR(rZ)
-    DISPATCH
+    b     dispatch
+     sh    t0, N64Z80_OFF_MEM_PTR(rZ)
 
 # out (n),a: WZ = (n + 1) | A << 8, the same bit-8 carry (n = 0xFF).
 OP D3
@@ -3191,8 +3175,8 @@ OP D3
     sll   t1, rA, 8
     addiu t0, t0, 1
     or    t0, t0, t1
-    sh    t0, N64Z80_OFF_MEM_PTR(rZ)
-    DISPATCH
+    b     dispatch
+     sh    t0, N64Z80_OFF_MEM_PTR(rZ)
 
 OP F3                           # di: IFF1 = IFF2 = 0 (set_iff1 clears the INT lanes)
     sb    zero, N64Z80_OFF_IFF1(rZ)
