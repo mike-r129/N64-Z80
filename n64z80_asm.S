@@ -106,16 +106,18 @@ n64z80_prof_cnt: .space 4 * PROF_KEYS
 #endif
 
 # Code placement. The handlers of the most frequent instructions, the
-# dispatch support and the run loop go in .text.n64z80hot, so they share
-# icache lines instead of being spread over the whole core; everything else
-# goes in .text.n64z80cold. The hot list is the Metal Slug sound driver's
-# opcode profile (trace mslug_36s_10s, docs/measurements.md): every opcode
-# above ~0.3% of the instructions.
+# dispatch support and the run loop go first in .text.n64z80 (subsection 0),
+# so they share icache lines instead of being spread over the whole core;
+# everything else follows directly (subsection 1). The hot list is the Metal
+# Slug sound driver's opcode profile (trace mslug_36s_10s,
+# docs/measurements.md): every opcode above ~0.3% of the instructions.
 .macro HOT
-    .section .text.n64z80hot, "ax", @progbits
+    .section .text.n64z80, "ax", @progbits
+    .subsection 0
 .endm
 .macro COLD
-    .section .text.n64z80cold, "ax", @progbits
+    .section .text.n64z80, "ax", @progbits
+    .subsection 1
 .endm
 .macro PLACE name
   .ifdef HOT_\name
@@ -133,7 +135,10 @@ n64z80_prof_cnt: .space 4 * PROF_KEYS
     .irp op, 5E,C8,C2,DE,91,22,B0,FE,0F,32,87,AF,00,15,79,29,7A,F2,2A,C3
     .set HOT_\op, 1
     .endr
-    .irp op, FD_CB,FD_21,FD_7E,FD_56,FD_6E,FD_2A,FD_77,FD_5E,DD_21
+    .irp op, FD_CB,FD_21,FD_7E,FD_56,FD_6E,FD_2A,FD_77,FD_5E,DD_21,DD_CB
+    .set HOT_\op, 1
+    .endr
+    .irp op, DB,D3,F3,FB          # port I/O and EI/DI: few, but costly
     .set HOT_\op, 1
     .endr
     .irp op, ED_5B,ED_42,ED_52,ED_53,ED_51,ED_59,ED_78,CB_57,CB_66
