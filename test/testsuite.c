@@ -46,6 +46,8 @@ extern const uint8_t zex_zexall[], zex_zexall_end[];
 
 // n64z80.c: fallback entries whose asm fetch pointer disagreed with the rmap.
 extern uint32_t n64z80_fetch_mismatch;
+// n64z80_asm.S: instructions the asm core ran through the C fallback.
+extern uint32_t n64z80_nfallback;
 
 static int failures;
 
@@ -158,6 +160,7 @@ static void run_traces(void) {
     fclose(f);
     const zcore* cores[] = { &REF_core, &ASM_core, &MUT1_core };
     for (int c = 0; c < 3; c++) {
+      uint32_t fb0 = n64z80_nfallback;
       replay_result r = replay(cores[c], tr, len, c < 2 ? 4 : 0);
       char what[96];
       snprintf(what, sizeof what, "replay %.63s on %.15s", names[i], cores[c]->name);
@@ -170,6 +173,9 @@ static void run_traces(void) {
              cores[c]->name, names[i],
              (unsigned long)(r.ticks * 1000000000ull / TICKS_PER_SECOND / r.steps),
              (unsigned long)(r.ticks * 2 / r.steps), r.steps, r.runs);
+      if (cores[c] == &ASM_core)
+        tlog("    ASM C-fallback instructions: %lu of %ld\n",
+             (unsigned long)(n64z80_nfallback - fb0), r.steps);
     }
     free(tr);
   }

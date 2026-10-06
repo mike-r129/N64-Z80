@@ -77,6 +77,8 @@ n64z80_rhi:     .word 0
 n64z80_pc0:     .word 0     # rPC0 across C calls
 n64z80_lastpc:  .word 0     # the run's last_pc pointer
 n64z80_wmap:    .word 0     # write page map (n64z80_set_wmap), or 0
+    .globl n64z80_nfallback
+n64z80_nfallback: .word 0   # instructions run by the C fallback (statistics)
 
 # S, Z, Y, X and P/V of each result byte (the reference's table).
 n64z80_sz53p:   .byte N64Z80_SZ53P
@@ -271,8 +273,11 @@ refetch:
     .balign 32
 op_fallback:
     lw    t0, %gp_rel(n64z80_rbase)(gp)
+    lw    t1, %gp_rel(n64z80_nfallback)(gp)
     addiu t0, t0, -1
+    addiu t1, t1, 1
     sw    t0, %gp_rel(n64z80_rbase)(gp)
+    sw    t1, %gp_rel(n64z80_nfallback)(gp)
     move  a1, rPC
     la    t9, n64z80_c_exec
     jal   call_c
