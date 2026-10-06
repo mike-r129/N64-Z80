@@ -54,6 +54,7 @@ static void ev(int kind, uint16_t addr, uint8_t val) {
 static void wbcb(void* ud, uint16_t addr, uint8_t val) {
   (void)ud;
   cur->mem[addr] = val;
+  if (cur->split) cur->alt[addr] = val;
   cur->dirty[addr >> 8] = 1;
   CPU.wrote = 1;
   ev(1, addr, val);
@@ -79,7 +80,7 @@ static void outcb(z80* z, uint16_t port, uint8_t val) {
 static void diff_run(Run* r, uint32_t until) {
   z80* z = &CPU;
   cur = r;
-  for (int i = 0; i < 256; i++) map[i] = (uintptr_t)r->mem;
+  for (int i = 0; i < 256; i++) map[i] = (uintptr_t)(r->split && (i & 1) ? r->alt : r->mem);
   z->rmap = map; z->read_byte = rbcb; z->write_byte = wbcb;
   z->port_in = incb; z->port_out = outcb; z->userdata = 0;
   St* s = &r->st;

@@ -1,9 +1,10 @@
 # n64z80: Zilog Z80 interpreter for the N64 (VR4300, libdragon o64 ABI).
 #
 # n64z80_run is the reference z80_run loop (reference/z80.c) with the Z80
-# registers in MIPS registers. Opcodes without an asm handler (n64z80_optab
-# entries left at op_fallback) execute in the C fallback (n64z80.c: one
-# reference instruction). Design (PLAN.md §4, docs/design-notes.md):
+# registers in MIPS registers. Every opcode has an asm handler; a debug
+# build (N64Z80_C_FALLBACK=1) can send table entries without one to the C
+# fallback (n64z80.c: one reference instruction), and otherwise such an
+# entry is a build error. Design (PLAN.md §4, docs/design-notes.md):
 #
 #   - PC is a host pointer (rPC) plus a bias (rBIAS = rmap[page], so the
 #     Z80 PC is rPC - rBIAS). The dispatch fetches through rPC while it is
@@ -32,6 +33,9 @@
 #     (wr8 remaps the PC and poisons). Other struct fields are not written
 #     back for write callbacks (design-notes, M0 review item 5).
 #include <regdef.h>
+#ifndef N64Z80_C_FALLBACK
+#define N64Z80_C_FALLBACK 0
+#endif
 #include "n64z80_offsets.h"
 #include "n64z80_tables.h"   // generated: CYC00_xx / CYCED_xx / CYCDD_xx, sz53p
 
@@ -54,19 +58,38 @@
 #define rPC0   t8    // Z80 address of the current instruction
 #define rRB    $at   // rbase (lazy R); C clobbers it: kept in R across calls
 
-# Stack frame: o64 argument home area, callee-saved registers, rZ, and the
-# registers wr8 keeps across a write callback.
-#define FRAME   192
+# Save area: callee-saved registers, rZ, and the registers kept across
+# owner callbacks. It is not on the stack but in the core's own data
+# (n64z80_frame; the core is not reentrant), so its dcache sets do not
+# depend on the caller's stack depth. The stack frame is only the o64
+# argument home area (FRAME) for the C functions the core calls. Slot
+# offsets count from the frame's start, as when the area was on the stack.
+#define FRAME    32
+#define SAVE    192   // FRAME + the save area
+#define FR(x)   %gp_rel(n64z80_frame+(x)-FRAME)(gp)
 #define F_S0     32
 #define F_RA    104
 #define F_Z     112
 #define F_RA2   120   // call_c's own return address
 #define F_WR    128   // wr8: ra, t2-t7, t8, Z80 PC, rRB (10 words); port_in/out: ra
 #define F_IO    168   // in_bc / inx_core / outx_core: ra, a1
+#define F_BN    176   // call_c / wr8: rLIM, rPC, rBIAS (a bounce across the call)
 
 # ---------------------------------------------------------------------------
 # Private state (gp-relative). The z80 struct itself is the owner's.
+#
+# Data layout, by dcache set (8 KB, 16-byte lines). Subsection 0 holds the
+# data nearly every instruction touches: optab (0x000), fdtab (0x400), sz53p
+# (0x800), cycdd (0x900); subsection 1 these variables and the save area
+# (0xA00-0xAEF); subsection 2 the tables only some prefixed instructions
+# use (cbtab, xcbtab, edtab, ddtab) and the bounce buffer, from 0xAF0. With
+# N64Z80_DCACHE_ALIGN the block starts on an 8 KB boundary, so those
+# offsets are the sets, and the owner's per-instruction data (rmap, wmap,
+# Z80 RAM, the struct) belongs in sets 0xB00-0x1FFF, clear of the hot part. Without the alignment the
+# block is 16-byte aligned: adding a variable never regroups table entries
+# into different lines (an 8-byte shift once cost 2%).
     .section .sdata
+    .subsection 1
     .balign 4
     .globl n64z80_insn, n64z80_lastw
 n64z80_until:   .word 0     # the run's `until`
@@ -77,6 +100,9 @@ n64z80_rhi:     .word 0     # R = rhi | ((rRB + rN) & 0x7F)
 n64z80_pc0:     .word 0     # rPC0 across C calls
 n64z80_lastpc:  .word 0     # the run's last_pc pointer
 n64z80_wmap:    .word 0     # write page map (n64z80_set_wmap), or 0
+n64z80_im0:     .word 0     # IM 0 instruction running: 0x10000 | pc0
+    .balign 8
+n64z80_frame:   .space SAVE - FRAME   # the save area (FR)
     .globl n64z80_nfallback
 n64z80_nfallback: .word 0   # instructions run by the C fallback (statistics)
 #ifdef N64Z80_PROF
@@ -86,8 +112,6 @@ n64z80_prof_start: .word 0  # COP0 Count at its dispatch
 n64z80_prof_key:   .word 0  # its key
 #endif
 
-# S, Z, Y, X and P/V of each result byte (the reference's table).
-n64z80_sz53p:   .byte N64Z80_SZ53P
 
 #ifdef N64Z80_PROF
 # Profiling build (make PROF=1), sampling: every 32nd dispatch starts timing
@@ -119,11 +143,21 @@ n64z80_prof_cnt: .space 4 * PROF_KEYS
     .section .text.n64z80, "ax", @progbits
     .subsection 1
 .endm
+# Code that rarely runs (fallbacks, interrupt service, bounce buffer) goes
+# last, so edits there do not move the cold handlers in the icache.
+.macro RARE
+    .section .text.n64z80, "ax", @progbits
+    .subsection 2
+.endm
 .macro PLACE name
   .ifdef HOT_\name
     HOT
   .else
+  .ifdef USED_\name
     COLD
+  .else
+    RARE
+  .endif
   .endif
 .endm
     .irp op, 28,FD,A7,7E,21,23,CA,3A,77,6F,08,ED,E6,2C,C4,CD,C9,BE,DD,20
@@ -143,6 +177,48 @@ n64z80_prof_cnt: .space 4 * PROF_KEYS
     .endr
     .irp op, ED_5B,ED_42,ED_52,ED_53,ED_51,ED_59,ED_78,CB_57,CB_66
     .set HOT_\op, 1
+    .endr
+# The other opcodes the three traces run (a full sampling profile): cold.
+# Everything else, never seen there, goes to the rare subsection, which
+# fills the code at 16 KB multiples past the hot block's icache lines.
+    .irp op, 01,04,05,06,09,0B,0C,0D,10,11,12,13,14,16,17,18
+    .set USED_\op, 1
+    .endr
+    .irp op, 1A,1E,1F,25,2B,2E,2F,34,35,36,37,38,3C,41,43,44
+    .set USED_\op, 1
+    .endr
+    .irp op, 4D,50,51,54,56,57,58,59,5A,5C,5D,60,62,66,67,69
+    .set USED_\op, 1
+    .endr
+    .irp op, 6A,6B,6E,72,73,7B,7C,80,83,84,85,88,8B,8E,8F,90
+    .set USED_\op, 1
+    .endr
+    .irp op, 94,96,98,AA,AB,AC,B1,B2,B3,B4,B5,B6,B7,B8,B9,BB
+    .set USED_\op, 1
+    .endr
+    .irp op, C0,C1,C5,C6,CB_0B,CB_1C,CB_1D,CB_20,CB_28,CB_38,CB_47,CB_4F,CB_5F,CB_67,CB_6F,CB_77
+    .set USED_\op, 1
+    .endr
+    .irp op, CB_CE,CB_FD,CE,CF,D0,D1,D2,D5,D6,D9,DA,DC,DD_09,DD_19,DD_35,DD_36
+    .set USED_\op, 1
+    .endr
+    .irp op, DD_46,DD_4E,DD_54,DD_56,DD_5D,DD_5E,DD_62,DD_66,DD_6B,DD_6E,DD_70,DD_71,DD_72,DD_73,DD_74,DD_75
+    .set USED_\op, 1
+    .endr
+    .irp op, DD_77,DD_7E,DD_86,DD_96,DD_AE,DD_BE,DD_E1,DD_E3,DD_E5,E1,E2,E3,E5,E9,ED_41,ED_43
+    .set USED_\op, 1
+    .endr
+    .irp op, ED_4B,ED_4D,ED_5F,ED_73,ED_79,ED_A0,ED_A8,ED_B0,F1,F5,FA,FD_19,FD_22,FD_36,FD_46,FD_4E
+    .set USED_\op, 1
+    .endr
+    .irp op, FD_54,FD_5D,FD_66,FD_6B,FD_70,FD_72,FD_73,FD_74,FD_75,FD_86,FD_E1,FD_E5,XC_06,XC_0E,XC_16,XC_1E
+    .set USED_\op, 1
+    .endr
+    .irp op, XC_26,XC_2E,XC_36,XC_3E,XC_86,XC_8E,XC_96,XC_9E,XC_A6,XC_AE,XC_B6,XC_BE,XC_C6,XC_CE,XC_D6,XC_DE
+    .set USED_\op, 1
+    .endr
+    .irp op, XC_E6,XC_EE,XC_F6,XC_FE
+    .set USED_\op, 1
     .endr
 
     HOT
@@ -222,24 +298,27 @@ n64z80_prof_cnt: .space 4 * PROF_KEYS
     .globl n64z80_run
     .type n64z80_run, @function
     .balign 32
-n64z80_run:
+# Entry of n64z80_run and n64z80_step: save the callee-saved registers,
+# a1 = until, a2 = last_pc (0 for a step), rebuild ev_mask, load the state.
+.macro PROLOGUE
     addiu sp, sp, -FRAME
-    sd    s0, F_S0+0(sp)
-    sd    s1, F_S0+8(sp)
-    sd    s2, F_S0+16(sp)
-    sd    s3, F_S0+24(sp)
-    sd    s4, F_S0+32(sp)
-    sd    s5, F_S0+40(sp)
-    sd    s6, F_S0+48(sp)
-    sd    s7, F_S0+56(sp)
-    sd    s8, F_S0+64(sp)
-    sd    ra, F_RA(sp)
-    sw    a0, F_Z(sp)
+    sd    s0, FR(F_S0+0)
+    sd    s1, FR(F_S0+8)
+    sd    s2, FR(F_S0+16)
+    sd    s3, FR(F_S0+24)
+    sd    s4, FR(F_S0+32)
+    sd    s5, FR(F_S0+40)
+    sd    s6, FR(F_S0+48)
+    sd    s7, FR(F_S0+56)
+    sd    s8, FR(F_S0+64)
+    sd    ra, FR(F_RA)
+    sw    a0, FR(F_Z)
     sw    a1, %gp_rel(n64z80_until)(gp)
     sw    a1, %gp_rel(n64z80_cbase)(gp)
     sw    a2, %gp_rel(n64z80_lastpc)(gp)
     sw    zero, %gp_rel(n64z80_lastw)(gp)
     move  rN, zero
+    li    rPC0, -1                  # below any pc for bounce's stop test
 #ifdef N64Z80_PROF
     sw    zero, %gp_rel(n64z80_prof_open)(gp)
 #endif
@@ -258,9 +337,28 @@ n64z80_run:
 
     jal   load_state
      nop
+.endm
+
+n64z80_run:
+    PROLOGUE
     # The first instruction runs whatever the budget.
     b     pre_insn
      nop
+
+# void n64z80_step(z80* z): one instruction (or HALT's NOP) and the
+# interrupt service, as a run with until = cyc and no last_pc: no IRQ
+# re-assertion, `wrote` only set, wrote_any untouched. The step also
+# rebuilds ev_mask, which the reference's z80_step leaves alone (it only
+# caches IFF1 and the constant lanes, so the service test is the same).
+    .globl n64z80_step
+    .type n64z80_step, @function
+n64z80_step:
+    lw    a1, N64Z80_OFF_CYC(a0)
+    move  a2, zero
+    PROLOGUE
+    b     pre_halt
+     nop
+    .size n64z80_step, .-n64z80_step
 
 #ifdef N64Z80_PROF
 # Sample event (t0 = the opcode being dispatched): close the open sample and
@@ -335,31 +433,34 @@ jp_remap:
 slow_exit:
     lw    t0, %gp_rel(n64z80_cbase)(gp)
     lw    t1, %gp_rel(n64z80_until)(gp)
+    lw    t2, %gp_rel(n64z80_im0)(gp)
     subu  t0, t0, t1
     addu  rCYC, rCYC, t0
-    sw    t1, %gp_rel(n64z80_cbase)(gp)
+    bnez  t2, svc_im0_done
+     sw   t1, %gp_rel(n64z80_cbase)(gp)
 
     ld    t0, N64Z80_OFF_EVENTS(rZ)
     ld    t1, N64Z80_OFF_EV_MASK(rZ)
     and   t0, t0, t1
-    beqz  t0, 2f
+    beqz  t0, se_test
      lbu  t0, N64Z80_OFF_IFF_DELAY(rZ)
-    lbu   t1, N64Z80_OFF_NMI_PENDING(rZ)
+    # process_interrupts: EI delay, else NMI, else an accepted INT.
+    bnez  t0, svc_delay
+     lbu  t1, N64Z80_OFF_NMI_PENDING(rZ)
     lbu   t2, N64Z80_OFF_INT_PENDING(rZ)
-    lbu   t3, N64Z80_OFF_IFF1(rZ)
-    or    t0, t0, t1
+    bnez  t1, svc_nmi
+     lbu  t3, N64Z80_OFF_IFF1(rZ)
     and   t2, t2, t3
-    or    t0, t0, t2
-    beqz  t0, 1f
+    bnez  t2, svc_int
      nop
-    la    t9, n64z80_c_service
-    jal   call_c
-     nop
-1:  lbu   t0, N64Z80_OFF_HALTED(rZ)
+se_halted:
+    lbu   t0, N64Z80_OFF_HALTED(rZ)
     bnez  t0, stop
      nop
-2:  bgez  rCYC, stop
+se_test:
+    bgez  rCYC, stop
      subu t0, rPC, rBIAS
+    andi  t0, t0, 0xFFFF            # past 0xFFFF after a bounce
     sltu  t1, rPC0, t0
     beqz  t1, stop
      nop
@@ -375,20 +476,22 @@ pre_insn:
      lbu  t0, N64Z80_OFF_IRQ_LINE(rZ)
     lbu   t1, N64Z80_OFF_IFF1(rZ)
     lbu   t2, N64Z80_OFF_INT_PENDING(rZ)
-    beqz  t0, 1f                     # irq_line && iff1 && !int_pending
+    beqz  t0, pre_halt               # irq_line && iff1 && !int_pending
      li   t3, 1
-    beqz  t1, 1f
+    beqz  t1, pre_halt
      lw   t0, N64Z80_OFF_IRQ_REDELIVER(rZ)
-    bnez  t2, 1f
+    bnez  t2, pre_halt
      nop
     sb    t3, N64Z80_OFF_INT_PENDING(rZ)   # z80_gen_int(z, z->int_data)
     addiu t0, t0, 1
     sw    t0, N64Z80_OFF_IRQ_REDELIVER(rZ)
-1:  lbu   t0, N64Z80_OFF_HALTED(rZ)
+pre_halt:
+    lbu   t0, N64Z80_OFF_HALTED(rZ)
     beqz  t0, 2f
      lw   t0, %gp_rel(n64z80_cbase)(gp)
     # HALT: a 4-cycle NOP in place (cyc_00[0x00]; R via rN), then its tail.
     subu  rPC0, rPC, rBIAS
+    andi  rPC0, rPC0, 0xFFFF
     addiu rN, rN, 1
     b     slow_exit
      addiu rCYC, rCYC, 4
@@ -399,32 +502,49 @@ dispatch_nocyc:
     lbu   t0, 0(rPC)
     DISPATCH_FETCHED
 
-# rPC reached rLIM: rPC is in the last 4 bytes of a page (the instruction
-# before was in the fast path, at most 4 bytes long). Extend rLIM if the
-# next page continues the same host region (never past 0xFFFF), else run
-# this instruction in the fallback.
+# rPC reached rLIM: rPC is in the last 4 bytes of rBIAS's page, or (after a
+# callback remapped the PC mid-instruction) up to 4 bytes past it. Extend
+# rLIM if the page is rBIAS's and the next one continues the same host
+# region (never past 0xFFFF), else run this instruction from a copy
+# (bounce). After an instruction run from the copy (rLIM = 0), map the PC
+# again (unbounce).
 refetch:
-    subu  t0, rPC, rBIAS
+    beqz  rLIM, unbounce             # only a bounce sets rLIM = 0
+     subu t0, rPC, rBIAS
     srl   t0, t0, 8
-    xori  t1, t0, 0xFF
-    beqz  t1, 1f
+    sltiu t1, t0, 0xFF
+    beqz  t1, bounce                 # page 0xFF, or past 0xFFFF
      sll  t0, t0, 2
-    addu  t1, rRMAP, t0
-    lw    t1, 4(t1)
-    bne   t1, rBIAS, 1f
+    addu  t0, rRMAP, t0
+    lw    t1, 0(t0)
+    lw    t0, 4(t0)
+    bne   t1, rBIAS, bounce          # a callback remapped mid-instruction
+     nop
+    bne   t0, rBIAS, bounce
      nop
     b     dispatch_nocyc
      addiu rLIM, rLIM, 256
-1:  subu  rPC0, rPC, rBIAS
-    b     op_fallback
-     addiu rN, rN, 1
 
+# EI delay (t0 = iff_delay > 0): count it down; at 0, IFF1 = IFF2 = 1.
+svc_delay:
+    addiu t0, t0, -1
+    bnez  t0, se_halted
+     sb   t0, N64Z80_OFF_IFF_DELAY(rZ)
+    li    t0, 1
+    sb    t0, N64Z80_OFF_IFF1(rZ)
+    sb    t0, N64Z80_OFF_IFF2(rZ)
+    li    t0, 0xFF
+    sb    t0, N64Z80_OFF_EVM_INT(rZ)
+    b     se_halted
+     sb   t0, N64Z80_OFF_EVM_LINE(rZ)
+
+#if N64Z80_C_FALLBACK
 # ---------------------------------------------------------------------------
 # C fallback: the whole instruction at rPC (== rPC0) runs in the reference.
 # The fallback re-executes the instruction's R increments, so give back the
 # one dispatch counted before materializing R.
     .balign 32
-    COLD
+    RARE
     .balign 4
 op_fallback:
     lw    t1, %gp_rel(n64z80_nfallback)(gp)
@@ -442,22 +562,34 @@ op_fallback:
     beqz  t1, slow_exit
      nop
     DISPATCH
+#endif
 
 # ---------------------------------------------------------------------------
 # Call the C function t9(rZ, a1) with the state written back to the struct,
 # then reload it (the callee may change anything, including the rmap).
     HOT
+# An instruction running from the bounce buffer (rLIM = 0) stays there: its
+# bytes are already copied, and unbounce maps the PC again afterwards with
+# the stop test (load_state's 16-bit PC would hide a wrap past 0xFFFF).
 call_c:
-    sw    ra, F_RA2(sp)
+    sw    ra, FR(F_RA2)
+    sw    rLIM, FR(F_BN+0)
+    sw    rPC, FR(F_BN+4)
+    sw    rBIAS, FR(F_BN+8)
     jal   save_state
      sw   rPC0, %gp_rel(n64z80_pc0)(gp)
     jalr  t9
      nop
-    lw    rZ, F_Z(sp)
+    lw    rZ, FR(F_Z)
     jal   load_state
      lw   rPC0, %gp_rel(n64z80_pc0)(gp)
-    lw    ra, F_RA2(sp)
-    jr    ra
+    lw    t0, FR(F_BN+0)
+    bnez  t0, 1f
+     lw   ra, FR(F_RA2)
+    lw    rPC, FR(F_BN+4)
+    lw    rBIAS, FR(F_BN+8)
+    move  rLIM, zero
+1:  jr    ra
      nop
 
 # Write the registers back to the struct: pc = rPC - rBIAS, cyc, R.
@@ -532,27 +664,34 @@ stop:
 #endif
     jal   save_state
      nop
+    lw    t2, %gp_rel(n64z80_lastpc)(gp)
     lw    t0, %gp_rel(n64z80_lastw)(gp)
-    xor   t1, t0, rN
+    beqz  t2, step_stop
+     xor  t1, t0, rN
     sltiu t1, t1, 1
     sb    t1, N64Z80_OFF_WROTE(rZ)
     sltu  t0, zero, t0
     sb    t0, N64Z80_OFF_WROTE_ANY(rZ)
-    lw    t0, %gp_rel(n64z80_lastpc)(gp)
-    sh    rPC0, 0(t0)
+    sh    rPC0, 0(t2)
     move  v0, rN
-    ld    s0, F_S0+0(sp)
-    ld    s1, F_S0+8(sp)
-    ld    s2, F_S0+16(sp)
-    ld    s3, F_S0+24(sp)
-    ld    s4, F_S0+32(sp)
-    ld    s5, F_S0+40(sp)
-    ld    s6, F_S0+48(sp)
-    ld    s7, F_S0+56(sp)
-    ld    s8, F_S0+64(sp)
-    ld    ra, F_RA(sp)
+ret_regs:
+    ld    s0, FR(F_S0+0)
+    ld    s1, FR(F_S0+8)
+    ld    s2, FR(F_S0+16)
+    ld    s3, FR(F_S0+24)
+    ld    s4, FR(F_S0+32)
+    ld    s5, FR(F_S0+40)
+    ld    s6, FR(F_S0+48)
+    ld    s7, FR(F_S0+56)
+    ld    s8, FR(F_S0+64)
+    ld    ra, FR(F_RA)
     jr    ra
      addiu sp, sp, FRAME
+step_stop:
+    bnez  t1, ret_regs              # no write in this instruction
+     li   t1, 1
+    b     ret_regs
+     sb   t1, N64Z80_OFF_WROTE(rZ)
     .size n64z80_run, .-n64z80_run
 
 # void n64z80_set_wmap(const uintptr_t* wmap)
@@ -706,17 +845,20 @@ wr8:
     jr    ra
      sb   t1, 0(a1)
 wr8_cb:
-    sw    ra, F_WR+0(sp)
-    sw    t2, F_WR+4(sp)
-    sw    t3, F_WR+8(sp)
-    sw    t4, F_WR+12(sp)
-    sw    t5, F_WR+16(sp)
-    sw    t6, F_WR+20(sp)
-    sw    t7, F_WR+24(sp)
-    sw    t8, F_WR+28(sp)
+    sw    ra, FR(F_WR+0)
+    sw    t2, FR(F_WR+4)
+    sw    t3, FR(F_WR+8)
+    sw    t4, FR(F_WR+12)
+    sw    t5, FR(F_WR+16)
+    sw    t6, FR(F_WR+20)
+    sw    t7, FR(F_WR+24)
+    sw    t8, FR(F_WR+28)
     subu  t9, rPC, rBIAS
-    sw    t9, F_WR+32(sp)
-    sw    rRB, F_WR+36(sp)
+    andi  t9, t9, 0xFFFF
+    sw    t9, FR(F_WR+32)
+    sw    rRB, FR(F_WR+36)
+    sw    rLIM, FR(F_BN+0)
+    sw    rBIAS, FR(F_BN+8)
     lw    t9, %gp_rel(n64z80_cbase)(gp)
     addu  t9, t9, rCYC
     sw    t9, N64Z80_OFF_CYC(rZ)
@@ -725,28 +867,51 @@ wr8_cb:
     move  a2, t1
     jalr  t9
      lw   a0, N64Z80_OFF_USERDATA(rZ)
-    lw    rZ, F_Z(sp)
+    lw    rZ, FR(F_Z)
     lw    rRMAP, N64Z80_OFF_RMAP(rZ)
-    lw    rRB, F_WR+36(sp)
-    lw    t0, F_WR+32(sp)
-    REMAP
-    POISON_IF_EVENTS
-    lw    ra, F_WR+0(sp)
-    lw    t2, F_WR+4(sp)
-    lw    t3, F_WR+8(sp)
-    lw    t4, F_WR+12(sp)
-    lw    t5, F_WR+16(sp)
-    lw    t6, F_WR+20(sp)
-    lw    t7, F_WR+24(sp)
+    lw    rRB, FR(F_WR+36)
+    lw    t0, FR(F_BN+0)
+    bnez  t0, 1f
+     lw   t0, FR(F_WR+32)
+    lw    rBIAS, FR(F_BN+8)         # bouncing: stay in the copy (as call_c)
+    b     2f
+     move rLIM, zero
+1:  REMAP
+2:  POISON_IF_EVENTS
+    lw    ra, FR(F_WR+0)
+    lw    t2, FR(F_WR+4)
+    lw    t3, FR(F_WR+8)
+    lw    t4, FR(F_WR+12)
+    lw    t5, FR(F_WR+16)
+    lw    t6, FR(F_WR+20)
+    lw    t7, FR(F_WR+24)
     jr    ra
-     lw   t8, F_WR+28(sp)
+     lw   t8, FR(F_WR+28)
 
 # Push t4 (16-bit) as the reference's pushw: SP -= 2, low byte at SP, high
 # byte at SP+1 (bal). Keeps t2-t6; clobbers t0, t1, t7, t9.
 push_t4:
-    move  t7, ra
     addiu rSP, rSP, -2
     andi  rSP, rSP, 0xFFFF
+    # Both bytes in one page the wmap stores directly: one lookup.
+    lw    t9, %gp_rel(n64z80_wmap)(gp)
+    andi  t1, rSP, 0xFF
+    xori  t1, t1, 0xFF
+    beqz  t1, push_slow             # SP + 1 is on the next page
+     srl  t0, rSP, 8
+    beqz  t9, push_slow
+     sll  t0, t0, 2
+    addu  t0, t0, t9
+    lw    t0, 0(t0)
+    beqz  t0, push_slow
+     addu t0, t0, rSP
+    sw    rN, %gp_rel(n64z80_lastw)(gp)
+    sb    t4, 0(t0)
+    srl   t1, t4, 8
+    jr    ra
+     sb   t1, 1(t0)
+push_slow:
+    move  t7, ra
     move  t0, rSP
     bal   wr8
      andi t1, t4, 0xFF
@@ -818,38 +983,68 @@ alu_or:
     addu  t1, rA, gp
     b     dispatch
      lbu  rF, %gp_rel(n64z80_sz53p)(t1)
-alu_cp:                           # sub without the result; Y/X from the operand
+alu_cp:                           # subb(A, v, 0) without the result; Y/X from v
+    subu  t2, rA, t0                # r (bit 8 set on a borrow)
+    andi  t3, t2, 0xFF
+    addu  t3, t3, gp
+    lbu   t1, %gp_rel(n64z80_sz53p)(t3)
+    sltu  t4, rA, t0                # C
+    xor   t5, rA, t0
+    xor   t6, t5, t2
+    andi  t6, t6, 0x10              # H: borrow into bit 4
+    xor   t7, rA, t2
+    and   t5, t5, t7
+    andi  t5, t5, 0x80
+    srl   t5, t5, 5                 # V: (A ^ v) & (A ^ r) & 0x80
+    andi  t1, t1, 0xC0              # S Z
+    or    t1, t1, t4
+    or    t1, t1, t6
+    or    t1, t1, t5
     andi  t9, t0, 0x28
-    xori  t0, t0, 0xFF
-    li    t1, 1
-    ADDB  rA, t0, t1
-    xori  rF, rF, 0x11
-    ori   rF, rF, 0x02
-    andi  rF, rF, 0xD7
+    or    t1, t1, t9
     b     dispatch
-     or    rF, rF, t9
+     ori  rF, t1, 0x02              # N
 
 # INC / DEC of byte t0: t2 = result byte, F as the reference's inc()/dec()
-# (C kept). bal; clobbers t1, t3-t7, t9, v0.
+# (addb(v, 1, 0) / subb(v, 1, 0) with C kept): S Z Y X from the result, H
+# when the low nibble wraps, V only for 0x7F -> 0x80 / 0x80 -> 0x7F, N for
+# DEC. bal; clobbers t1, t3.
 inc_core:
-    andi  t9, rF, 1
-    li    t1, 1
-    ADDB  t0, t1, zero
-    andi  rF, rF, 0xFE
-    or    rF, rF, t9
+    addiu t2, t0, 1
+    andi  t2, t2, 0xFF
+    addu  t1, t2, gp
+    lbu   t1, %gp_rel(n64z80_sz53p)(t1)
+    andi  rF, rF, 1
+    andi  t1, t1, 0xFB
+    or    rF, rF, t1
+    andi  t3, t2, 0x0F
+    sltiu t3, t3, 1                 # H: xF -> x0
+    sll   t3, t3, 4
+    or    rF, rF, t3
+    xori  t3, t2, 0x80
+    sltiu t3, t3, 1                 # V: 0x7F -> 0x80
+    sll   t3, t3, 2
     jr    ra
-     andi t2, t2, 0xFF
-dec_core:                         # subb(v, 1, 0) = addb(v, 0xFE, 1), C/H flipped, N
-    andi  t9, rF, 1
-    li    t1, 0xFE
-    li    v0, 1
-    ADDB  t0, t1, v0
-    xori  rF, rF, 0x11
-    ori   rF, rF, 0x02
-    andi  rF, rF, 0xFE
-    or    rF, rF, t9
+     or   rF, rF, t3
+dec_core:
+    addiu t2, t0, -1
+    andi  t2, t2, 0xFF
+    addu  t1, t2, gp
+    lbu   t1, %gp_rel(n64z80_sz53p)(t1)
+    andi  rF, rF, 1
+    andi  t1, t1, 0xFB
+    or    rF, rF, t1
+    andi  t3, t2, 0x0F
+    xori  t3, t3, 0x0F
+    sltiu t3, t3, 1                 # H: x0 -> xF
+    sll   t3, t3, 4
+    or    rF, rF, t3
+    xori  t3, t2, 0x7F
+    sltiu t3, t3, 1                 # V: 0x80 -> 0x7F
+    sll   t3, t3, 2
+    or    rF, rF, t3
     jr    ra
-     andi t2, t2, 0xFF
+     ori  rF, rF, 0x02              # N
 
 # ---------------------------------------------------------------------------
 # Handler families.
@@ -1664,16 +1859,168 @@ OP 36                           # ld (hl),n
 # the first), reads the next opcode byte and jumps through that prefix's
 # table. The handler there charges the instruction's cycles, so any table
 # entry can instead be pfx_fallback, which takes the increment back,
-# rewinds to rPC0 and runs the whole instruction in C. One prefix with its operands is at most
-# 4 bytes, which the dispatch's limit check already covers; prefix chains
-# (DD DD, FD ED, ...) go to C.
+# rewinds to rPC0 and runs the whole instruction in C. One prefix with its
+# operands is at most 4 bytes, which the dispatch's limit check already
+# covers; a chain (DD DD, FD ED, ...) repeats the check at each further
+# prefix (ddfd_chain).
 
-    COLD
+    RARE
+# An instruction that straddles a mapping boundary: copy it, run it from the
+# copy (the limit check is skipped: it fails there).
+bounce:
+    subu  t0, rPC, rBIAS
+    andi  t0, t0, 0xFFFF
+    slt   t1, rPC0, t0
+    beqz  t1, edge_exit             # wrapped past 0xFFFF: pc <= pc0 stops
+     nop
+    bal   bounce_fill
+     nop
+    lbu   t0, 0(rPC)
+    sll   t0, t0, 2
+    addu  t0, t0, gp
+    lw    t0, %gp_rel(n64z80_optab)(t0)
+    subu  rPC0, rPC, rBIAS
+    jr    t0
+     addiu rN, rN, 1
+
+unbounce:
+    subu  t0, rPC, rBIAS
+    andi  t0, t0, 0xFFFF
+    slt   t1, rPC0, t0
+    beqz  t1, edge_exit             # wrapped past 0xFFFF: pc <= pc0 stops
+     nop
+    REMAP
+    b     dispatch_nocyc
+     nop
+
+# Copy the 4 bytes at Z80 address t0 (wrapping at 0xFFFF) through the rmap
+# to n64z80_bbuf and fetch from there: rBIAS = bbuf - t0 (so rPC - rBIAS is
+# still the Z80 address, up to 0x10002 past a wrap: users mask it), rPC =
+# bbuf, rLIM = 0 so every dispatch from the copy refetches. bal; clobbers
+# t1-t4.
+bounce_fill:
+    addiu t4, gp, %gp_rel(n64z80_bbuf)
+    move  t3, t0
+    READ8 t1, t3, t2
+    sb    t1, 0(t4)
+    addiu t3, t3, 1
+    andi  t3, t3, 0xFFFF
+    READ8 t1, t3, t2
+    sb    t1, 1(t4)
+    addiu t3, t3, 1
+    andi  t3, t3, 0xFFFF
+    READ8 t1, t3, t2
+    sb    t1, 2(t4)
+    addiu t3, t3, 1
+    andi  t3, t3, 0xFFFF
+    READ8 t1, t3, t2
+    sb    t1, 3(t4)
+    subu  rBIAS, t4, t0
+    move  rPC, t4
+    jr    ra
+     move rLIM, zero
+
+# NMI: no IFF2 change, +11, call 0x66.
+svc_nmi:
+    sb    zero, N64Z80_OFF_NMI_PENDING(rZ)
+    li    t5, 0x66
+    b     svc_call
+     addiu rCYC, rCYC, 11
+
+# Accepted INT: IM 1 calls 0x38 (+13), IM 2 the vector at I << 8 |
+# int_data (+19), IM 0 executes int_data (+11 and its own cycles).
+svc_int:
+    lbu   t0, N64Z80_OFF_IM(rZ)
+    sb    zero, N64Z80_OFF_INT_PENDING(rZ)
+    sb    zero, N64Z80_OFF_IFF2(rZ)
+    li    t1, 1
+    beq   t0, t1, 1f
+     li   t5, 0x38
+    li    t1, 2
+    bne   t0, t1, svc_im0
+     lbu  t0, N64Z80_OFF_I(rZ)
+    lbu   t1, N64Z80_OFF_INT_DATA(rZ)
+    sll   t0, t0, 8
+    or    t0, t0, t1
+    READ8 t5, t0, t1
+    addiu t0, t0, 1
+    andi  t0, t0, 0xFFFF
+    READ8 t1, t0, t2
+    sll   t1, t1, 8
+    or    t5, t5, t1
+    addiu rCYC, rCYC, 6             # 19 in all
+1:  addiu rCYC, rCYC, 13
+
+# Both: HALT ends, IFF1 = 0, R + 1, push PC, PC = WZ = t5. A write callback
+# in the push may poison: undo it, as the C service never poisons.
+svc_call:
+    sb    zero, N64Z80_OFF_HALTED(rZ)
+    sb    zero, N64Z80_OFF_IFF1(rZ)
+    sb    zero, N64Z80_OFF_EVM_INT(rZ)
+    sb    zero, N64Z80_OFF_EVM_LINE(rZ)
+    addiu rRB, rRB, 1
+    subu  t4, rPC, rBIAS
+    bal   push_t4
+     nop
+    sh    t5, N64Z80_OFF_MEM_PTR(rZ)
+    move  t0, t5
+    REMAP
+    lw    t0, %gp_rel(n64z80_cbase)(gp)
+    lw    t1, %gp_rel(n64z80_until)(gp)
+    subu  t0, t0, t1
+    addu  rCYC, rCYC, t0
+    b     se_halted
+     sw   t1, %gp_rel(n64z80_cbase)(gp)
+
+# IM 0 (t0 = the mode): exec_opcode(int_data) with the PC where it is. It
+# runs from the bounce buffer as the opcode at PC - 1, followed by the bytes
+# at PC (its operands), with rPC0 = PC - 1 (block repeats) and without
+# counting an instruction. Poisoned, so its tail comes back to slow_exit,
+# which sees n64z80_im0, restores rPC0 and resumes at the stop test: the
+# reference services once per instruction. Modes 3 and up only acknowledge
+# (the reference just reports them).
+svc_im0:
+    sb    zero, N64Z80_OFF_HALTED(rZ)
+    sb    zero, N64Z80_OFF_IFF1(rZ)
+    sb    zero, N64Z80_OFF_EVM_INT(rZ)
+    sb    zero, N64Z80_OFF_EVM_LINE(rZ)
+    lbu   t0, N64Z80_OFF_IM(rZ)
+    bnez  t0, se_halted
+     addiu rRB, rRB, 1              # the service's R + 1
+    addiu rRB, rRB, 1               # exec_opcode's
+    addiu rCYC, rCYC, 11
+    lw    t0, %gp_rel(n64z80_cbase)(gp)
+    addu  t0, t0, rCYC
+    sw    t0, %gp_rel(n64z80_cbase)(gp)
+    move  rCYC, zero
+    lui   t0, 1
+    or    t0, t0, rPC0
+    sw    t0, %gp_rel(n64z80_im0)(gp)
+    subu  t0, rPC, rBIAS
+    addiu t0, t0, -1
+    bal   bounce_fill
+     andi t0, t0, 0xFFFF
+    lbu   t1, N64Z80_OFF_INT_DATA(rZ)
+    sb    t1, 0(rPC)
+    subu  rPC0, rPC, rBIAS
+    sll   t1, t1, 2
+    addu  t1, t1, gp
+    lw    t1, %gp_rel(n64z80_optab)(t1)
+    jr    t1
+     nop
+
+svc_im0_done:
+    sw    zero, %gp_rel(n64z80_im0)(gp)
+    b     se_halted
+     andi rPC0, t2, 0xFFFF
+
+#if N64Z80_C_FALLBACK
 pfx_fallback:
     move  t0, rPC0
     REMAP
     b     op_fallback
      addiu rRB, rRB, -1
+#endif
 
 # Jump through `table` on the byte at rPC+1 (t0), with rPC advanced to it.
 .macro PREFIX table, group
@@ -1711,6 +2058,21 @@ ddfd_base:
     lw    t0, %gp_rel(n64z80_optab)(t0)
     jr    t0
      nop
+
+# A prefix after DD/FD (DD, ED, FD; exec_opcode_ddfd runs it as the
+# unprefixed opcode, i.e. as a new prefix): a chain. Its own handler reads
+# up to 4 bytes from rPC, so the limit check is repeated here; past the
+# limit, the rest runs from a copy.
+    RARE
+ddfd_chain:
+    sltu  t1, rPC, rLIM
+    bnez  t1, ddfd_base
+     subu t2, rPC, rBIAS             # (t0 is the opcode on the taken path)
+    bal   bounce_fill
+     andi t0, t2, 0xFFFF
+    b     ddfd_base
+     lbu  t0, 0(rPC)
+    HOT
 
 # Shared tails: rPC is at the opcode byte after the prefix; skip it and n-1
 # more bytes, next instruction.
@@ -1883,7 +2245,7 @@ CBOP \op
 # result to register z unless z = 6. cyc_ddfd[CB] is 0.
 
 .macro XC_ROT op, core, r
-    COLD
+    PLACE XC_\op
 op_XC_\op:
     sh    t5, N64Z80_OFF_MEM_PTR(rZ)
     READ8 t0, t5, t1
@@ -1917,7 +2279,7 @@ op_XC_\o7:
 .endm
 
 .macro XC_RES_SET op, set, y, r
-    COLD
+    PLACE XC_\op
 op_XC_\op:
     sh    t5, N64Z80_OFF_MEM_PTR(rZ)
     READ8 t0, t5, t1
@@ -2282,7 +2644,7 @@ op_ED_\op:
 
 # Every ED opcode exec_opcode_ed doesn't implement: an 8-cycle NOP
 # (gen_tables.py checks the 8).
-    COLD
+    RARE
 ed_nop:
     addiu rCYC, rCYC, 8
     b     dispatch
@@ -2376,7 +2738,7 @@ EDOP \op
     ED_ADC_SBC 62, 1, rHL
     ED_ADC_SBC 72, 1, rSP
 
-    COLD
+    RARE
 op_ED_44:                         # neg (all eight encodings): subb(0, A, 0)
 op_ED_4C:
 op_ED_54:
@@ -2414,10 +2776,22 @@ EDOP 47                           # ld i,a
     b     dispatch
      addiu rPC, rPC, 1
 
-EDOP 4F                           # ld r,a: R = A after the instruction
+# dst = the DD/FD prefixes before this ED (a chain; rPC is at the byte after
+# the ED). The reference runs the ED instruction inside them and takes one
+# R increment back per prefix afterwards, so inside it R is that much higher.
+.macro CHAIN_DEPTH dst
+    subu  \dst, rPC, rBIAS
+    addiu \dst, \dst, -1
+    subu  \dst, \dst, rPC0
+    andi  \dst, \dst, 0xFFFF
+.endm
+
+EDOP 4F                           # ld r,a: R = A, less the chain's take-back
     andi  t0, rA, 0x80
     sw    t0, %gp_rel(n64z80_rhi)(gp)
+    CHAIN_DEPTH t1
     subu  rRB, rA, rN
+    subu  rRB, rRB, t1
     b     dispatch
      addiu rPC, rPC, 1
 
@@ -2426,8 +2800,10 @@ EDOP 57                           # ld a,i
     b     ld_a_ir
      lbu  rA, N64Z80_OFF_I(rZ)
 EDOP 5F                           # ld a,r (R after both increments)
+    CHAIN_DEPTH t2
     lw    t1, %gp_rel(n64z80_rhi)(gp)
     addu  t0, rRB, rN
+    addu  t0, t0, t2
     andi  t0, t0, 0x7F
     or    rA, t0, t1
 ld_a_ir:
@@ -2544,6 +2920,15 @@ EDOP A8                           # ldd
     b     dispatch
      addiu rPC, rPC, 1
 
+# dst = the address of the ED byte (rPC is at the byte after it): where a
+# block instruction repeats from, as the reference's PC - 2. That is pc0
+# unless DD/FD prefixes precede the ED (a chain), which the repeat skips.
+.macro ED_PC dst
+    subu  \dst, rPC, rBIAS
+    addiu \dst, \dst, -1
+    andi  \dst, \dst, 0xFFFF
+.endm
+
 # ldir / lddr: repeat while BC != 0 by going back to the instruction itself
 # (+5, WZ = PC + 1): a loop edge, so the run stops after every iteration,
 # exactly as in the reference.
@@ -2559,15 +2944,15 @@ ldxr_tail:
     beqz  rBC, next1
      nop
     addiu rCYC, rCYC, 5
-    addiu t0, rPC0, 1
-    sh    t0, N64Z80_OFF_MEM_PTR(rZ)
+    ED_PC t0
+    addiu t1, t0, 1
     b     jp_to
-     move t0, rPC0
+     sh   t1, N64Z80_OFF_MEM_PTR(rZ)
 
 # cpi / cpd core (cpi()): subb(A, (HL), 0) with C kept, HL += a1, BC - 1,
 # Y/X from bits 1/3 of (result - H), P/V = BC != 0, WZ += a1 (the step:
 # ADDB clobbers t2-t7). bal; clobbers t0-t7, t9.
-    COLD
+    RARE
 cpx_core:
     andi  t9, rF, 1
     READ8 t0, rHL, t1
@@ -2619,10 +3004,10 @@ EDOP B1
     beqz  rBC, 1f
      nop
     addiu rCYC, rCYC, 5
-    addiu t0, rPC0, 1
-    sh    t0, N64Z80_OFF_MEM_PTR(rZ)
+    ED_PC t0
+    addiu t1, t0, 1
     b     jp_to
-     move t0, rPC0
+     sh   t1, N64Z80_OFF_MEM_PTR(rZ)
 1:  lhu   t0, N64Z80_OFF_MEM_PTR(rZ)
     addiu t0, t0, 1
     sh    t0, N64Z80_OFF_MEM_PTR(rZ)
@@ -2639,8 +3024,9 @@ EDOP B9
     beqz  rBC, 1f
      nop
     addiu rCYC, rCYC, 5
+    ED_PC t0
     b     jp_to
-     move t0, rPC0
+     nop
 1:  lhu   t0, N64Z80_OFF_MEM_PTR(rZ)
     addiu t0, t0, 1
     sh    t0, N64Z80_OFF_MEM_PTR(rZ)
@@ -3120,19 +3506,19 @@ EDOP B9
 # v0 = port_in(z, t0). bal; keeps rPC0; clobbers the caller-saved registers.
     HOT
 port_in:
-    sw    ra, F_WR+0(sp)
+    sw    ra, FR(F_WR+0)
     move  a1, t0
     lw    t9, N64Z80_OFF_PORT_IN(rZ)
     jal   call_c
      nop
     POISON_IF_EVENTS
-    lw    ra, F_WR+0(sp)
+    lw    ra, FR(F_WR+0)
     jr    ra
      nop
 
 # port_out(z, t0, t1). bal; as port_in.
 port_out:
-    sw    ra, F_WR+0(sp)
+    sw    ra, FR(F_WR+0)
     sw    rN, %gp_rel(n64z80_lastw)(gp)
     move  a1, t0
     move  a2, t1
@@ -3140,7 +3526,7 @@ port_out:
     jal   call_c
      nop
     POISON_IF_EVENTS
-    lw    ra, F_WR+0(sp)
+    lw    ra, FR(F_WR+0)
     jr    ra
      nop
 
@@ -3151,11 +3537,11 @@ OP DB
     lbu   t0, 1(rPC)
     addiu rPC, rPC, 2
     sll   t1, rA, 8
-    sw    t1, F_WR+4(sp)        # A_old << 8 (the stack slot survives the call)
+    sw    t1, FR(F_WR+4)        # A_old << 8 (the stack slot survives the call)
     bal   port_in
      or   t0, t0, t1
     andi  rA, v0, 0xFF
-    lw    t1, F_WR+4(sp)
+    lw    t1, FR(F_WR+4)
     addiu t0, rA, 1
     or    t0, t0, t1
     b     dispatch
@@ -3166,12 +3552,12 @@ OP D3
     CHARGE D3
     lbu   t0, 1(rPC)
     addiu rPC, rPC, 2
-    sw    t0, F_WR+4(sp)
+    sw    t0, FR(F_WR+4)
     sll   t1, rA, 8
     or    t0, t0, t1
     bal   port_out
      move t1, rA
-    lw    t0, F_WR+4(sp)
+    lw    t0, FR(F_WR+4)
     sll   t1, rA, 8
     addiu t0, t0, 1
     or    t0, t0, t1
@@ -3252,7 +3638,7 @@ OP 27                           # daa (the reference's daa())
 # in_r_c: t2 = port_in(BC); S Z P from it, H = N = 0, Y X C kept.
     HOT
 in_bc:
-    sw    ra, F_IO+0(sp)
+    sw    ra, FR(F_IO+0)
     bal   port_in
      move t0, rBC
     andi  t2, v0, 0xFF
@@ -3261,7 +3647,7 @@ in_bc:
     andi  rF, rF, 0x29
     andi  t0, t0, 0xC4
     or    rF, rF, t0
-    lw    ra, F_IO+0(sp)
+    lw    ra, FR(F_IO+0)
     jr    ra
      nop
 
@@ -3315,33 +3701,33 @@ EDOP \op
 # ini / ind (ini(), ind()): (HL) = port_in(BC); HL += a1; B - 1;
 # Z = (B == 0), N = 1, the rest kept; WZ = BC + 1 (ini) / BC - 2 (ind).
 # rPC is at the second opcode byte. bal.
-    COLD
+    RARE
 inx_core:
-    sw    ra, F_IO+0(sp)
-    sw    a1, F_IO+4(sp)
+    sw    ra, FR(F_IO+0)
+    sw    a1, FR(F_IO+4)
     addiu rPC, rPC, 1           # the reference's PC at the call
     bal   port_in
      move t0, rBC
     move  t0, rHL
     bal   wr8
      andi t1, v0, 0xFF
-    lw    a1, F_IO+4(sp)
+    lw    a1, FR(F_IO+4)
     addiu rPC, rPC, -1
     b     ioblk_regs
-     lw   ra, F_IO+0(sp)
+     lw   ra, FR(F_IO+0)
 
 # outi / outd (outi(), outd()): port_out(BC, (HL)) with B not yet
 # decremented; then as ini / ind.
 outx_core:
-    sw    ra, F_IO+0(sp)
-    sw    a1, F_IO+4(sp)
+    sw    ra, FR(F_IO+0)
+    sw    a1, FR(F_IO+4)
     READ8 t1, rHL, t0
     addiu rPC, rPC, 1
     bal   port_out
      move t0, rBC
-    lw    a1, F_IO+4(sp)
+    lw    a1, FR(F_IO+4)
     addiu rPC, rPC, -1
-    lw    ra, F_IO+0(sp)
+    lw    ra, FR(F_IO+0)
 ioblk_regs:
     addu  rHL, rHL, a1
     andi  rHL, rHL, 0xFFFF
@@ -3371,8 +3757,9 @@ EDOP \op
     beqz  t0, next1
      nop
     addiu rCYC, rCYC, \extra
+    ED_PC t0
     b     jp_to
-     move t0, rPC0
+     nop
   .else
     b     dispatch
      addiu rPC, rPC, 1
@@ -3388,11 +3775,25 @@ EDOP \op
     ED_IOBLK BB, outx_core, -1, 1, 0    # otdr: no +5
 
 # ===========================================================================
-# Dispatch tables, built from the handlers that exist: an opcode without
-# one runs in the C fallback (prefixed ones through pfx_fallback). .ifdef
-# only sees labels defined above it, so the tables must stay at the end.
+# Dispatch tables, built from the handlers that exist. .ifdef only sees
+# labels defined above it, so the tables must stay at the end.
+
+# A table entry without a handler: the C fallback `fb` in a debug build, a
+# build error otherwise.
+.macro NOHANDLER fb, name
+#if N64Z80_C_FALLBACK
+    .word \fb
+#else
+    .error "n64z80: no asm handler for \name"
+#endif
+.endm
     .section .sdata
-    .balign 4
+    .subsection 0
+#ifdef N64Z80_DCACHE_ALIGN
+    .balign 8192
+#else
+    .balign 16
+#endif
 
 n64z80_optab:
     .irp hi, 0,1,2,3,4,5,6,7,8,9,A,B,C,D,E,F
@@ -3400,18 +3801,20 @@ n64z80_optab:
     .ifdef op_\hi\lo
     .word op_\hi\lo
     .else
-    .word op_fallback
+    NOHANDLER op_fallback, \hi\lo
     .endif
     .endr
     .endr
 
+    .subsection 2
+    .balign 16
 n64z80_cbtab:
     .irp hi, 0,1,2,3,4,5,6,7,8,9,A,B,C,D,E,F
     .irp lo, 0,1,2,3,4,5,6,7,8,9,A,B,C,D,E,F
     .ifdef op_CB_\hi\lo
     .word op_CB_\hi\lo
     .else
-    .word pfx_fallback
+    NOHANDLER pfx_fallback, prefixed \hi\lo
     .endif
     .endr
     .endr
@@ -3422,7 +3825,7 @@ n64z80_xcbtab:
     .ifdef op_XC_\hi\lo
     .word op_XC_\hi\lo
     .else
-    .word pfx_fallback
+    NOHANDLER pfx_fallback, prefixed \hi\lo
     .endif
     .endr
     .endr
@@ -3436,7 +3839,7 @@ n64z80_edtab:
     .word op_ED_\hi\lo
     .else
     .ifdef ED_OP_\hi\lo
-    .word pfx_fallback
+    NOHANDLER pfx_fallback, prefixed \hi\lo
     .else
     .word ed_nop
     .endif
@@ -3445,8 +3848,8 @@ n64z80_edtab:
     .endr
 
 # DD / FD: index-register handlers; index forms without one go to C; any
-# other opcode runs as the unprefixed one (ddfd_base) if that has a handler.
-# A second prefix (DD, ED, FD) is a chain: C.
+# other opcode runs as the unprefixed one (ddfd_base) if that has a handler,
+# a second prefix (DD, ED, FD) through ddfd_chain.
     .set CHAIN_DD, 1
     .set CHAIN_ED, 1
     .set CHAIN_FD, 1
@@ -3457,15 +3860,15 @@ n64z80_edtab:
     .word op_\p\()_\hi\lo
     .else
     .ifdef DDFD_IZ_\hi\lo
-    .word pfx_fallback
+    NOHANDLER pfx_fallback, prefixed \hi\lo
     .else
     .ifdef CHAIN_\hi\lo
-    .word pfx_fallback
+    .word ddfd_chain
     .else
     .ifdef op_\hi\lo
     .word ddfd_base
     .else
-    .word pfx_fallback
+    NOHANDLER pfx_fallback, prefixed \hi\lo
     .endif
     .endif
     .endif
@@ -3475,8 +3878,17 @@ n64z80_edtab:
 .endm
 n64z80_ddtab:
     DDFD_TABLE DD
+
+# Bounce buffer: a copy of an instruction that straddles a mapping boundary.
+    .balign 4
+n64z80_bbuf:    .word 0
+
+    .subsection 0
 n64z80_fdtab:
     DDFD_TABLE FD
+
+# S, Z, Y, X and P/V of each result byte (the reference's table).
+n64z80_sz53p:   .byte N64Z80_SZ53P
 
 # cyc_ddfd, for ddfd_base.
 n64z80_cycdd:   .byte N64Z80_CYCDD

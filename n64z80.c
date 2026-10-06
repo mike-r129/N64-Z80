@@ -1,11 +1,16 @@
-// C side of the n64z80 core: init, z80_step, and the C fallback that
-// n64z80_asm.S calls for every instruction it has no handler for (in M1:
-// all of them) and for interrupt service.
+// C side of the n64z80 core: init and the interrupt request entry points,
+// and in a debug build (N64Z80_C_FALLBACK=1) the C fallback that
+// n64z80_asm.S can send table entries without an asm handler to.
 //
 // The fallback is the reference core itself: build/n64z80_ref.c is
 // reference/z80.c with its write_byte / port_out call sites rewritten to the
 // hooks below (Makefile), compiled here with its public symbols renamed.
 // The hooks give the core its own `wrote` tracking (n64z80.h).
+#ifndef N64Z80_C_FALLBACK
+#define N64Z80_C_FALLBACK 0
+#endif
+
+#if N64Z80_C_FALLBACK
 #include <stdio.h>
 
 // The reference reports undefined opcodes on stderr; random code and the
@@ -55,13 +60,47 @@ void n64z80_c_exec(z80* z, const uint8_t* host) {
   exec_opcode(z, nextb(z));
 }
 
-// Interrupt service after an instruction (z80_step's predicate).
-void n64z80_c_service(z80* z) {
-  if (z->iff_delay | (uint8_t)(z->nmi_pending | (z->int_pending & z->iff1)))
-    process_interrupts(z);
+#endif  // N64Z80_C_FALLBACK
+
+#include <stddef.h>
+#include "n64z80.h"
+
+// The reference's z80_init, field by field (the testsuite compares them).
+void n64z80_init(z80* z) {
+  z->read_byte = NULL;
+  z->rmap = NULL;
+  z->write_byte = NULL;
+  z->port_in = NULL;
+  z->port_out = NULL;
+  z->userdata = NULL;
+  z->cyc = 0;
+  z->pc = 0;
+  z->sp = 0xFFFF;
+  z->ix = 0;
+  z->iy = 0;
+  z->mem_ptr = 0;
+  z->a = 0xFF;
+  z->b = z->c = z->d = z->e = z->h = z->l = 0;
+  z->a_ = z->b_ = z->c_ = z->d_ = z->e_ = z->h_ = z->l_ = z->f_ = 0;
+  z->i = 0;
+  z->r = 0;
+  z->f = 0xFF;
+  z->iff_delay = 0;
+  z->interrupt_mode = 0;
+  z->events = 0;
+  z->ev_mask = 0;
+  z->iff1 = 0;                      // set_iff1(z, 0)
+  z->evm_int = z->evm_line = 0;
+  z->iff2 = 0;
+  z->halted = 0;
+  z->int_pending = 0;
+  z->nmi_pending = 0;
+  z->int_data = 0;
 }
 
-void n64z80_init(z80* z) { n64z80_ref_init(z); }
-void n64z80_step(z80* z) { n64z80_ref_step(z); }
-void n64z80_gen_int(z80* z, uint8_t data) { n64z80_ref_gen_int(z, data); }
-void n64z80_gen_nmi(z80* z) { n64z80_ref_gen_nmi(z); }
+void n64z80_gen_int(z80* z, uint8_t data) {
+  z->int_pending = 1;
+  z->int_data = data;
+}
+
+void n64z80_gen_nmi(z80* z) { z->nmi_pending = 1; }

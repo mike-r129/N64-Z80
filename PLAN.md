@@ -365,7 +365,9 @@ number in `docs/measurements.md`)
   Slug trace (C core 1.65 in the same build, 2.9×).*
   - Exit: µs/instruction on the trace ≤ 0.6.
 - **M4: full asm coverage.** The C fallback becomes a debug option
-  (`N64Z80_C_FALLBACK=1`).
+  (`N64Z80_C_FALLBACK=1`). *2026-10-06: coverage done (no C in the default
+  build; differential, ZEXALL and the traces clean), speed not: 0.50
+  µs/instr on the Metal Slug trace (C core 1.59, 3.2×), see design notes.*
   - Exit: ZEXALL plus differential clean with the fallback disabled; ≤ 0.45
     µs/instruction.
 - **M5: mvs64 integration** (on a branch in mvs64).
