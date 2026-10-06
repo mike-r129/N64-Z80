@@ -7,6 +7,7 @@
 // mutants must still be caught (the harness still checks something).
 #include <libdragon.h>
 #include <string.h>
+#include <malloc.h>
 #include "zdiff.h"
 #include "zex.h"
 #include "replay.h"
@@ -199,9 +200,12 @@ static void run_traces(void) {
     fseek(f, 0, SEEK_END);
     long len = ftell(f);
     fseek(f, 0, SEEK_SET);
-    uint8_t* tr = malloc(len);
+    // At a fixed dcache position (TRACE_SHIFT from an 8 KB boundary), so the
+    // timings do not depend on the heap's state in this build.
+    uint8_t* blk = memalign(8192, len + 8192);
+    uint8_t* tr = blk ? blk + TRACE_SHIFT : NULL;
     if (!tr || fread(tr, 1, len, f) != (size_t)len) {
-      fclose(f); free(tr);
+      fclose(f); free(blk);
       verdict(0, "trace %.63s: cannot load %ld bytes (%ld)", names[i], len, 0);
       continue;
     }
@@ -231,7 +235,7 @@ static void run_traces(void) {
         tlog("    ASM C-fallback instructions: %lu of %ld\n",
              (unsigned long)(n64z80_nfallback - fb0), r.steps);
     }
-    free(tr);
+    free(blk);
   }
 }
 
@@ -240,8 +244,8 @@ int main(void) {
   debug_init_usblog();
   dfs_init(DFS_DEFAULT_LOCATION);
   tlog("\nN64Z80 testsuite (asm core vs the reference)\n");
-  tlog("config: ZDIFF_CASES=%d ZDIFF_SEED=%d ZEX_MAX_STEPS=%d ZEX_SETS=%d ZEX_ONLY=%d\n", ZDIFF_CASES,
-       ZDIFF_SEED, ZEX_MAX_STEPS, ZEX_SETS, ZEX_ONLY);
+  tlog("config: ZDIFF_CASES=%d ZDIFF_SEED=%d ZEX_MAX_STEPS=%d ZEX_SETS=%d ZEX_ONLY=%d TRACE_SHIFT=%d\n",
+       ZDIFF_CASES, ZDIFF_SEED, ZEX_MAX_STEPS, ZEX_SETS, ZEX_ONLY, TRACE_SHIFT);
 
   // z80_init is plain C in the asm core: it must leave every byte of the
   // struct as the reference's does.

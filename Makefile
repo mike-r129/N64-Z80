@@ -21,6 +21,10 @@ ZDIFF_SEED ?= 1
 ZEX_MAX_STEPS ?= 5000000
 ZEX_SETS ?= 3
 ZEX_ONLY ?= 0
+# TRACE_SHIFT: byte offset of each trace from an 8 KB boundary. The traces
+# carry the game's Z80 ROM, which the core reads through the dcache, so its
+# placement against the core's tables moves the trace timings.
+TRACE_SHIFT ?= 0
 # PROF=1: per-opcode cycle profile of the asm core on the traces (slower).
 PROF ?= 0
 # N64Z80_C_FALLBACK=1: link the reference as a fallback for table entries
@@ -43,12 +47,14 @@ SHA_zexall.cim := af7e5d86146d390a68440fb85668648f14a648602da29a1816d2ef11459411
 
 # The core is n64z80_asm.S plus its C side, n64z80.c (which includes the C
 # fallback generated below).
-src := test/testsuite.c test/zdiff.c test/zex.c test/bench.c test/replay.c
+src := test/testsuite.c test/zdiff.c test/zex.c test/bench.c
 asm := test/zex_roms.S
 # The core links last and its code starts on a 16 KB boundary (the icache
 # size; N64Z80_ICACHE_ALIGN), so an edit to the core never moves the
-# harness's code in the direct-mapped icache: timings stay comparable.
-OBJS := $(src:%.c=$(BUILD_DIR)/%.o) $(asm:%.S=$(BUILD_DIR)/%.o) $(CORES:%=$(BUILD_DIR)/zcore_%.o) \
+# harness's code in the direct-mapped icache: timings stay comparable. The
+# trace replay follows test/icache_pad.S, which fixes its icache index too.
+OBJS := $(src:%.c=$(BUILD_DIR)/%.o) $(asm:%.S=$(BUILD_DIR)/%.o) \
+	$(BUILD_DIR)/test/icache_pad.o $(BUILD_DIR)/test/replay.o $(CORES:%=$(BUILD_DIR)/zcore_%.o) \
 	$(BUILD_DIR)/n64z80.o $(BUILD_DIR)/n64z80_asm.o
 N64_ASFLAGS += -DN64Z80_ICACHE_ALIGN
 # Likewise the core's data starts on an 8 KB boundary (the dcache size;
@@ -119,8 +125,8 @@ $(BUILD_DIR)/mut%/z80.c: reference/z80.c test/mutants/mut%.sed
 # so changing one rebuilds testsuite.o.
 $(BUILD_DIR)/test_config.h: FORCE
 	@mkdir -p $(BUILD_DIR)
-	@printf '#define ZDIFF_CASES %s\n#define ZDIFF_SEED %s\n#define ZEX_MAX_STEPS %s\n#define ZEX_SETS %s\n#define ZEX_ONLY %s\n' \
-		$(ZDIFF_CASES) $(ZDIFF_SEED) $(ZEX_MAX_STEPS) $(ZEX_SETS) $(ZEX_ONLY) > $@.tmp
+	@printf '#define ZDIFF_CASES %s\n#define ZDIFF_SEED %s\n#define ZEX_MAX_STEPS %s\n#define ZEX_SETS %s\n#define ZEX_ONLY %s\n#define TRACE_SHIFT %s\n' \
+		$(ZDIFF_CASES) $(ZDIFF_SEED) $(ZEX_MAX_STEPS) $(ZEX_SETS) $(ZEX_ONLY) $(TRACE_SHIFT) > $@.tmp
 	@cmp -s $@.tmp $@ && rm -f $@.tmp || mv $@.tmp $@
 $(BUILD_DIR)/test/testsuite.o: $(BUILD_DIR)/test_config.h
 
