@@ -167,3 +167,19 @@ don't apply; needs a check of m64k's TLB budget.
   prepared (the measured bank-switch rates, the hybrid option, the pointer to
   mvs64's `Z80-INTEGRATION-PLAN.md`). The content is intended; only the
   commit message under-describes it.
+
+## 2026-10-05 (later): measured Z80 budget
+
+- mvs64 confirmed and fixed the DET_AUDIO pump (mvs64 PR #23): DET builds
+  now generate exactly one guest frame of audio per pump, and the N64 build
+  matches the PC build's Z80 instructions per second interval by interval.
+  Correction to the previous entry: N64 audio runs at 11,025 Hz, so the bug
+  was a 440-sample AI buffer per 184-sample frame, not 1,760 per 735; the
+  ~2.4× ratio and the conclusion are unchanged.
+- The real budget is measured (`test/traces/mvs64-budget.md`, now in
+  PLAN.md §1): sound ≈ 1,040 ms per audio second in the mission (Z80 673,
+  YM2610 166, other ~200), non-sound ≈ 14.8 ms per guest frame. The Z80
+  needs ≤ 0.81 µs/instr for 20 fps, ≤ 0.63 for 25, ≤ 0.45 for 30. The design
+  target (≤ 0.45 µs, M4 exit) is the 30 fps point; the M3 exit (≤ 0.6 µs)
+  is already past the 25 fps point.
+- mvs64 PR #21 is merged, so `reference/` equals mvs64 `main` (d04c08f).
