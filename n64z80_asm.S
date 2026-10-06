@@ -315,7 +315,7 @@ jp_to:
      sltu t1, rPC0, t0
     # Same 256-byte page as rPC, whose mapping (rBIAS, rLIM) is current even
     # after a callback in this instruction (those remap rPC's page).
-    beqz  t1, slow_exit
+    beqz  t1, edge_exit
      addu rPC, rBIAS, t0
 
 dispatch:
@@ -323,7 +323,7 @@ dispatch:
 
 jp_remap:
     REMAP
-    beqz  t1, slow_exit
+    beqz  t1, edge_exit
      nop
     DISPATCH
 
@@ -463,17 +463,15 @@ call_c:
 # Write the registers back to the struct: pc = rPC - rBIAS, cyc, R.
 # Clobbers t0, t1.
 save_state:
+    sll   t0, rBC, 16
+    or    t0, t0, rDE
+    swl   t0, N64Z80_OFF_B(rZ)      # B C D E
+    swr   t0, N64Z80_OFF_E(rZ)
     sb    rA, N64Z80_OFF_A(rZ)
     sb    rF, N64Z80_OFF_F(rZ)
     srl   t0, rHL, 8
     sb    t0, N64Z80_OFF_H(rZ)
     sb    rHL, N64Z80_OFF_L(rZ)
-    srl   t0, rDE, 8
-    sb    t0, N64Z80_OFF_D(rZ)
-    sb    rDE, N64Z80_OFF_E(rZ)
-    srl   t0, rBC, 8
-    sb    t0, N64Z80_OFF_B(rZ)
-    sb    rBC, N64Z80_OFF_C(rZ)
     sh    rSP, N64Z80_OFF_SP(rZ)
     subu  t0, rPC, rBIAS
     sh    t0, N64Z80_OFF_PC(rZ)
@@ -491,20 +489,15 @@ save_state:
 # Load the registers from the struct, rebase R and the cycle counter, map PC.
 # Clobbers t0-t2.
 load_state:
+    lwl   t0, N64Z80_OFF_B(rZ)      # B C D E (big endian, unaligned)
+    lwr   t0, N64Z80_OFF_E(rZ)
+    lwl   t1, N64Z80_OFF_H(rZ)      # H L A' B'
+    lwr   t1, N64Z80_OFF_H+3(rZ)
     lbu   rA, N64Z80_OFF_A(rZ)
     lbu   rF, N64Z80_OFF_F(rZ)
-    lbu   t0, N64Z80_OFF_H(rZ)
-    lbu   rHL, N64Z80_OFF_L(rZ)
-    sll   t0, t0, 8
-    or    rHL, rHL, t0
-    lbu   t0, N64Z80_OFF_D(rZ)
-    lbu   rDE, N64Z80_OFF_E(rZ)
-    sll   t0, t0, 8
-    or    rDE, rDE, t0
-    lbu   t0, N64Z80_OFF_B(rZ)
-    lbu   rBC, N64Z80_OFF_C(rZ)
-    sll   t0, t0, 8
-    or    rBC, rBC, t0
+    srl   rBC, t0, 16
+    andi  rDE, t0, 0xFFFF
+    srl   rHL, t1, 16
     lhu   rSP, N64Z80_OFF_SP(rZ)
     lw    rRMAP, N64Z80_OFF_RMAP(rZ)
     lw    t0, N64Z80_OFF_CYC(rZ)
@@ -520,6 +513,13 @@ load_state:
      nop
 
 # ---------------------------------------------------------------------------
+# A control transfer found a loop edge. rCYC < 0 means not poisoned: cbase
+# is `until` and events & ev_mask is zero (every change that can make it
+# nonzero poisons), so slow_exit would only reach the stop test: stop now.
+edge_exit:
+    bgez  rCYC, slow_exit
+     nop
+
 # End of the run (cbase == until here): write everything back.
 stop:
 #ifdef N64Z80_PROF
