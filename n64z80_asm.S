@@ -1678,8 +1678,8 @@ rot_flags:
 
 # ---------------------------------------------------------------------------
 # CB xx (exec_opcode_cb): 8 cycles. (HL) forms read through the rmap and add
-# 7 before the write back; BIT n,(HL) adds 4 and takes Y/X from WZ's high
-# byte.
+# 7 before the write back; BIT n,(HL) adds 4, takes Y/X from WZ's high
+# byte and also writes the (unchanged) byte back.
 
 .macro CBOP op
     PLACE CB_\op
@@ -1721,6 +1721,13 @@ CBOP \op
   .endif
     andi  t2, t0, (1 << \y)
     BITFLAGS
+  .if \r == 6
+    # The reference writes the byte back (exec_opcode_cb: reg == &hl), after
+    # the +4. Keep it: it is a bus event and sets `wrote`.
+    move  t1, t0
+    bal   wr8
+     move t0, rHL
+  .endif
     b     next1
      nop
 .endm
