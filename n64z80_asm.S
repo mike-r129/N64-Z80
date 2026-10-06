@@ -76,6 +76,7 @@ n64z80_rbase:   .word 0     # R = rhi | ((rbase + rN) & 0x7F)
 n64z80_rhi:     .word 0
 n64z80_pc0:     .word 0     # rPC0 across C calls
 n64z80_lastpc:  .word 0     # the run's last_pc pointer
+n64z80_wmap:    .word 0     # write page map (n64z80_set_wmap), or 0
 
 # S, Z, Y, X and P/V of each result byte (the reference's table).
 n64z80_sz53p:   .byte N64Z80_SZ53P
@@ -389,6 +390,14 @@ stop:
      addiu sp, sp, FRAME
     .size n64z80_run, .-n64z80_run
 
+# void n64z80_set_wmap(const uintptr_t* wmap)
+    .globl n64z80_set_wmap
+    .type n64z80_set_wmap, @function
+n64z80_set_wmap:
+    jr    ra
+     sw   a0, %gp_rel(n64z80_wmap)(gp)
+    .size n64z80_set_wmap, .-n64z80_set_wmap
+
 # ===========================================================================
 # Handlers. Each one is entered from the dispatch with rPC at its opcode,
 # rPC0 = its Z80 address and rN already counting it; it advances rPC (or
@@ -511,13 +520,25 @@ op_\op:
 # ---------------------------------------------------------------------------
 # Shared pieces.
 
-# Write byte t1 to Z80 address t0 through the owner's write_byte, with `cyc`
-# written back (bal; rN marks the instruction as writing). Keeps t2-t7, t8
-# and the Z80 PC; remaps the PC (the callback may change the rmap) and
-# poisons if events & ev_mask became nonzero. Clobbers t0, t1, t9, a1, a2
-# (rRMAP is reloaded).
+# Write byte t1 to Z80 address t0 (bal; rN marks the instruction as
+# writing). A page with a wmap entry is stored directly. Otherwise the
+# owner's write_byte is called with `cyc` written back; it may change the
+# rmap and the event bytes, so the PC is remapped and the poison check runs.
+# Keeps t2-t7, t8 and the Z80 PC; clobbers t0, t1, t9, a1, a2 (rRMAP is
+# reloaded).
 wr8:
+    lw    t9, %gp_rel(n64z80_wmap)(gp)
     sw    rN, %gp_rel(n64z80_lastw)(gp)
+    beqz  t9, wr8_cb
+     srl  a1, t0, 8
+    sll   a1, a1, 2
+    addu  a1, a1, t9
+    lw    a1, 0(a1)
+    beqz  a1, wr8_cb
+     addu a1, a1, t0
+    jr    ra
+     sb   t1, 0(a1)
+wr8_cb:
     sw    ra, F_WR+0(sp)
     sw    t2, F_WR+4(sp)
     sw    t3, F_WR+8(sp)

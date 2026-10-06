@@ -77,4 +77,12 @@ unsigned n64z80_run(z80* z, unsigned long until, uint16_t* last_pc);
 void n64z80_gen_int(z80* z, uint8_t data);
 void n64z80_gen_nmi(z80* z);
 
+// Optional write page map, the write-side twin of z->rmap: for a page with a
+// nonzero entry, a memory write is stored at *(uint8_t*)(wmap[addr >> 8] +
+// addr) instead of calling write_byte (`wrote` still counts it). Use it only
+// for pages whose write_byte would do nothing but that store (work RAM).
+// NULL (the default) sends every write to write_byte. The core keeps the
+// pointer; the owner may change the entries between runs or in callbacks.
+void n64z80_set_wmap(const uintptr_t* wmap);
+
 #endif
