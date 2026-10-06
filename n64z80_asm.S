@@ -20,7 +20,7 @@
 #     restores cbase = until and services events in the reference's order.
 #   - rN counts instructions, 1-based: dispatch increments it, so during
 #     instruction k (and its interrupt service) rN == k. It gives the return
-#     value, lazy R (R = rhi | ((rbase + rN) & 0x7F)) and `wrote` (the write
+#     value, lazy R (R = rhi | ((rRB + rN) & 0x7F)) and `wrote` (the write
 #     hooks store rN in lastw: wrote = lastw == rN, wrote_any = lastw != 0).
 #   - rPC0 is the Z80 address of the current instruction (pc0): the stop
 #     test is pc <= pc0 after interrupt service, and *last_pc.
@@ -52,6 +52,7 @@
 #define rLIM   a3    // fast fetch while rPC < rLIM
 #define rRMAP  a2    // z->rmap (reloaded after every C call)
 #define rPC0   t8    // Z80 address of the current instruction
+#define rRB    $at   // rbase (lazy R); C clobbers it: kept in R across calls
 
 # Stack frame: o64 argument home area, callee-saved registers, rZ, and the
 # registers wr8 keeps across a write callback.
@@ -60,7 +61,7 @@
 #define F_RA    104
 #define F_Z     112
 #define F_RA2   120   // call_c's own return address
-#define F_WR    128   // wr8: ra, t2-t7, t8, Z80 PC (9 words); port_in/out: ra
+#define F_WR    128   // wr8: ra, t2-t7, t8, Z80 PC, rRB (10 words); port_in/out: ra
 #define F_IO    168   // in_bc / inx_core / outx_core: ra, a1
 
 # ---------------------------------------------------------------------------
@@ -72,8 +73,7 @@ n64z80_until:   .word 0     # the run's `until`
 n64z80_cbase:   .word 0     # cyc = cbase + rCYC
 n64z80_insn:    .word 0     # rN, published for the C write hooks
 n64z80_lastw:   .word 0     # rN of the last instruction that wrote (0: none)
-n64z80_rbase:   .word 0     # R = rhi | ((rbase + rN) & 0x7F)
-n64z80_rhi:     .word 0
+n64z80_rhi:     .word 0     # R = rhi | ((rRB + rN) & 0x7F)
 n64z80_pc0:     .word 0     # rPC0 across C calls
 n64z80_lastpc:  .word 0     # the run's last_pc pointer
 n64z80_wmap:    .word 0     # write page map (n64z80_set_wmap), or 0
@@ -427,11 +427,9 @@ refetch:
     COLD
     .balign 4
 op_fallback:
-    lw    t0, %gp_rel(n64z80_rbase)(gp)
     lw    t1, %gp_rel(n64z80_nfallback)(gp)
-    addiu t0, t0, -1
+    addiu rRB, rRB, -1
     addiu t1, t1, 1
-    sw    t0, %gp_rel(n64z80_rbase)(gp)
     sw    t1, %gp_rel(n64z80_nfallback)(gp)
     move  a1, rPC
     la    t9, n64z80_c_exec
@@ -482,9 +480,8 @@ save_state:
     lw    t0, %gp_rel(n64z80_cbase)(gp)
     addu  t0, t0, rCYC
     sw    t0, N64Z80_OFF_CYC(rZ)
-    lw    t0, %gp_rel(n64z80_rbase)(gp)
     lw    t1, %gp_rel(n64z80_rhi)(gp)
-    addu  t0, t0, rN
+    addu  t0, rRB, rN
     andi  t0, t0, 0x7F
     or    t0, t0, t1
     sb    t0, N64Z80_OFF_R(rZ)
@@ -516,8 +513,7 @@ load_state:
     lbu   t0, N64Z80_OFF_R(rZ)
     andi  t1, t0, 0x80
     sw    t1, %gp_rel(n64z80_rhi)(gp)
-    subu  t0, t0, rN
-    sw    t0, %gp_rel(n64z80_rbase)(gp)
+    subu  rRB, t0, rN
     lhu   t0, N64Z80_OFF_PC(rZ)
     REMAP
     jr    ra
@@ -720,6 +716,7 @@ wr8_cb:
     sw    t8, F_WR+28(sp)
     subu  t9, rPC, rBIAS
     sw    t9, F_WR+32(sp)
+    sw    rRB, F_WR+36(sp)
     lw    t9, %gp_rel(n64z80_cbase)(gp)
     addu  t9, t9, rCYC
     sw    t9, N64Z80_OFF_CYC(rZ)
@@ -730,6 +727,7 @@ wr8_cb:
      lw   a0, N64Z80_OFF_USERDATA(rZ)
     lw    rZ, F_Z(sp)
     lw    rRMAP, N64Z80_OFF_RMAP(rZ)
+    lw    rRB, F_WR+36(sp)
     lw    t0, F_WR+32(sp)
     REMAP
     POISON_IF_EVENTS
@@ -1662,11 +1660,11 @@ OP 36                           # ld (hl),n
 # ===========================================================================
 # Prefixed instructions (CB, DD, ED, FD, DD CB / FD CB).
 #
-# A prefix handler changes no state: it reads the next opcode byte and jumps
-# through that prefix's table. The handler there charges the instruction's
-# cycles and its second R increment (RBUMP; rN already counts the first),
-# so any table entry can instead be pfx_fallback, which rewinds to rPC0 and
-# runs the whole instruction in C. One prefix with its operands is at most
+# A prefix handler only counts R's second increment (rRB; rN already counts
+# the first), reads the next opcode byte and jumps through that prefix's
+# table. The handler there charges the instruction's cycles, so any table
+# entry can instead be pfx_fallback, which takes the increment back,
+# rewinds to rPC0 and runs the whole instruction in C. One prefix with its operands is at most
 # 4 bytes, which the dispatch's limit check already covers; prefix chains
 # (DD DD, FD ED, ...) go to C.
 
@@ -1675,14 +1673,7 @@ pfx_fallback:
     move  t0, rPC0
     REMAP
     b     op_fallback
-     nop
-
-# R's second increment for a prefixed instruction. Clobbers t9.
-.macro RBUMP
-    lw    t9, %gp_rel(n64z80_rbase)(gp)
-    addiu t9, t9, 1
-    sw    t9, %gp_rel(n64z80_rbase)(gp)
-.endm
+     addiu rRB, rRB, -1
 
 # Jump through `table` on the byte at rPC+1 (t0), with rPC advanced to it.
 .macro PREFIX table, group
@@ -1696,7 +1687,7 @@ pfx_fallback:
     addu  t1, t1, gp
     lw    t1, %gp_rel(\table)(t1)
     jr    t1
-     nop
+     addiu rRB, rRB, 1
 .endm
 
 OP CB
@@ -1709,12 +1700,11 @@ OP FD
     PREFIX n64z80_fdtab, 4
 
 # DD/FD before an opcode exec_opcode_ddfd does not handle itself: it runs as
-# the unprefixed opcode (t0 = it, rPC at it) after cyc_ddfd[op] and R + 1.
+# the unprefixed opcode (t0 = it, rPC at it) after cyc_ddfd[op].
     HOT
 ddfd_base:
     addu  t1, t0, gp
     lbu   t1, %gp_rel(n64z80_cycdd)(t1)
-    RBUMP
     addu  rCYC, rCYC, t1
     sll   t0, t0, 2
     addu  t0, t0, gp
@@ -1814,7 +1804,6 @@ rot_flags:
     PLACE CB_\op
 op_CB_\op:
     addiu rCYC, rCYC, 8
-    RBUMP
 .endm
 
 .macro CB_ROT op, core, r
@@ -1896,7 +1885,6 @@ CBOP \op
 .macro XC_ROT op, core, r
     COLD
 op_XC_\op:
-    RBUMP
     sh    t5, N64Z80_OFF_MEM_PTR(rZ)
     READ8 t0, t5, t1
     bal   \core
@@ -1918,7 +1906,6 @@ op_XC_\o4:
 op_XC_\o5:
 op_XC_\o6:
 op_XC_\o7:
-    RBUMP
     sh    t5, N64Z80_OFF_MEM_PTR(rZ)
     READ8 t0, t5, t1
     andi  t2, t0, (1 << \y)
@@ -1932,7 +1919,6 @@ op_XC_\o7:
 .macro XC_RES_SET op, set, y, r
     COLD
 op_XC_\op:
-    RBUMP
     sh    t5, N64Z80_OFF_MEM_PTR(rZ)
     READ8 t0, t5, t1
   .if \set
@@ -1966,7 +1952,6 @@ xc_write:
     PLACE \p\()_\op
 op_\p\()_\op:
     addiu rCYC, rCYC, CYCDD_\op
-    RBUMP
 .endm
 
 # dst = (IZ + d) & 0xFFFF with d at rPC+1, WZ = dst (the reference's IZD).
@@ -2293,7 +2278,6 @@ op_\p\()_CB:
     PLACE ED_\op
 op_ED_\op:
     addiu rCYC, rCYC, CYCED_\op
-    RBUMP
 .endm
 
 # Every ED opcode exec_opcode_ed doesn't implement: an 8-cycle NOP
@@ -2301,7 +2285,6 @@ op_ED_\op:
     COLD
 ed_nop:
     addiu rCYC, rCYC, 8
-    RBUMP
     b     dispatch
      addiu rPC, rPC, 1
 
@@ -2403,7 +2386,6 @@ op_ED_6C:
 op_ED_74:
 op_ED_7C:
     addiu rCYC, rCYC, CYCED_44
-    RBUMP
     xori  t0, rA, 0xFF
     li    t1, 1
     ADDB  zero, t0, t1
@@ -2435,8 +2417,7 @@ EDOP 47                           # ld i,a
 EDOP 4F                           # ld r,a: R = A after the instruction
     andi  t0, rA, 0x80
     sw    t0, %gp_rel(n64z80_rhi)(gp)
-    subu  t0, rA, rN
-    sw    t0, %gp_rel(n64z80_rbase)(gp)
+    subu  rRB, rA, rN
     b     dispatch
      addiu rPC, rPC, 1
 
@@ -2445,9 +2426,8 @@ EDOP 57                           # ld a,i
     b     ld_a_ir
      lbu  rA, N64Z80_OFF_I(rZ)
 EDOP 5F                           # ld a,r (R after both increments)
-    lw    t0, %gp_rel(n64z80_rbase)(gp)
     lw    t1, %gp_rel(n64z80_rhi)(gp)
-    addu  t0, t0, rN
+    addu  t0, rRB, rN
     andi  t0, t0, 0x7F
     or    rA, t0, t1
 ld_a_ir:
@@ -2475,7 +2455,6 @@ op_ED_6D:
 op_ED_75:
 op_ED_7D:
     addiu rCYC, rCYC, CYCED_45
-    RBUMP
     lbu   t0, N64Z80_OFF_IFF2(rZ)
     sltu  t0, zero, t0            # bool: any nonzero byte is true
     sb    t0, N64Z80_OFF_IFF1(rZ)
