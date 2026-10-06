@@ -42,6 +42,15 @@ Conventions:
 | 2026-10-05 | 900c996 | ″ | ares | trace replay REF / NEW, all three traces | 0 mismatches, every RUN/STEP/IN/OUT/RAM/END check |
 | 2026-10-05 | 900c996 | ″ | ares | trace replay control MUT1 (BIT without H) | 2,007 / 19,310 / 1,011 mismatches (= mvs64's z80replay) |
 | 2026-10-05 | 900c996 | ″ | ares | zdiff throughput, same harness, new code layout | 1,629 cases/s (was 2,112 at 0dd4aef) |
+| 2026-10-05 | 7fbb914 | testsuite, defaults (M1: asm run loop, C fallback for every opcode) | ares | zdiff REF vs ASM, 20,000 cases / direct-write filter, 5,000 cases | 0 / 0 mismatches |
+| 2026-10-05 | 7fbb914 | ″ | ares | zdiff controls MUT1–MUT4 vs REF | 507 / 877 / 1,279 / 41 mismatches (unchanged) |
+| 2026-10-05 | 7fbb914 | ″ | ares | trace replay ASM, all three traces; MUT1 control | 0 mismatches; 2,007 / 19,310 / 1,011 |
+| 2026-10-05 | 7fbb914 | ″ | ares | prelim, ZEXDOC and ZEXALL subsets (35 + 35 groups ≤ 5M instr) on ASM through `z80_run` | exact (steps, cycles, CRC); 0 fetch-pointer mismatches |
+| 2026-10-05 | 7fbb914 | ″ | ares | replay `mslug_42s_1s`: REF / ASM (M1) | 1,764 / 3,644 ns/instr (165 / 341 cycles) |
+| 2026-10-05 | 7fbb914 | ″ | ares | replay `mslug_36s_10s`: REF / ASM (M1) | 1,771 / 3,648 ns/instr |
+| 2026-10-05 | 7fbb914 | ″ | ares | replay `samsho2_30s_5s`: REF / ASM (M1) | 2,324 / 4,416 ns/instr |
+| 2026-10-05 | 7fbb914 | ″ | ares | scan loop: REF `z80_run` / ASM `n64z80_run` (M1) / ASM `n64z80_step` (C) | 1,080 / 3,361 / 1,174 ns/instr |
+| 2026-10-05 | 7fbb914 | ″ | ares | ASM ZEX subset through `z80_run` (75.7M instr) | 2,978 ns/instr |
 
 ## Notes on the rows
 
@@ -75,3 +84,12 @@ Conventions:
   0dd4aef and 900c996 (DFS and the replay code linked in), and the C-vs-C
   harness slowed 23%: N64 timings are layout-sensitive, so compare cores
   within one build, never across builds.
+- **2026-10-05, M1 cost.** The M1 loop runs every instruction through the
+  C fallback (write the registers back, call the reference for one
+  instruction, reload, remap): about 2.2 µs per instruction more than the C
+  core's own loop (scan loop 3,361 vs 1,174 ns through the same C code via
+  `z80_step`). That overhead disappears per opcode as M2 adds handlers. The
+  REF trace numbers moved from 1,633 to 1,764 ns with no change to the C
+  core (its synthetic loops are unchanged at 1,080 / 1,412 ns): another
+  layout effect on the larger replay working set, so speedups are always
+  quoted against REF in the same build.
