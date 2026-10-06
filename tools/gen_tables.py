@@ -10,7 +10,9 @@ handlers charge exactly the reference's base cycles (GAS symbols, not
     .set CYCED_B0, 16       # cyc_ed[0xB0]
     .set CYCDD_21, 14       # cyc_ddfd[0x21]
 
-plus N64Z80_SZ53P, the reference's sz53p flag table as a byte list.
+plus DDFD_IZ_xx for every opcode exec_opcode_ddfd handles itself (the
+rest run as unprefixed opcodes) and N64Z80_SZ53P, the reference's sz53p
+flag table as a byte list.
 Included by n64z80_asm.S only.
 
 usage: gen_tables.py reference/z80.c > build/n64z80_tables.h
@@ -38,7 +40,30 @@ def main():
     for name, prefix in TABLES:
         for op, v in enumerate(table(src, name)):
             out.append(".set %s_%02X, %d" % (prefix, op, v))
+    # The opcodes exec_opcode_ddfd handles itself (index-register forms);
+    # every other DD/FD opcode runs as the unprefixed one.
+    m = re.search(r"\nvoid exec_opcode_ddfd\(.*?\n\}\n", src, re.S)
+    if not m:
+        sys.exit("gen_tables: no exec_opcode_ddfd")
+    iz = sorted(set(int(x, 16) for x in re.findall(r"case 0x([0-9A-Fa-f]{2}):", m.group(0))))
+    if len(iz) < 80:
+        sys.exit("gen_tables: only %d DD/FD cases found" % len(iz))
+    for op in iz:
+        out.append(".set DDFD_IZ_%02X, 1" % op)
+    # The ED opcodes exec_opcode_ed implements; the others are 8-cycle NOPs
+    # (its default case), which the asm handles with one shared handler.
+    m = re.search(r"\nvoid exec_opcode_ed\(.*?\n\}\n", src, re.S)
+    if not m:
+        sys.exit("gen_tables: no exec_opcode_ed")
+    ed = set(int(x, 16) for x in re.findall(r"case 0x([0-9A-Fa-f]{2}):", m.group(0)))
+    cyc_ed = table(src, "cyc_ed")
+    for op in range(256):
+        if op in ed:
+            out.append(".set ED_OP_%02X, 1" % op)
+        elif cyc_ed[op] != 8:
+            sys.exit("gen_tables: undefined ED %02X costs %d cycles, not 8" % (op, cyc_ed[op]))
     out.append("#define N64Z80_SZ53P " + ",".join("0x%02x" % v for v in table(src, "sz53p")))
+    out.append("#define N64Z80_CYCDD " + ",".join("%d" % v for v in table(src, "cyc_ddfd")))
     out.append("#endif")
     sys.stdout.write("\n".join(out) + "\n")
 
