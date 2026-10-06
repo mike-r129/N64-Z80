@@ -40,8 +40,12 @@ SHA_zexall.cim := af7e5d86146d390a68440fb85668648f14a648602da29a1816d2ef11459411
 # fallback generated below).
 src := test/testsuite.c test/zdiff.c test/zex.c test/bench.c test/replay.c
 asm := test/zex_roms.S
-OBJS := $(BUILD_DIR)/n64z80.o $(BUILD_DIR)/n64z80_asm.o \
-	$(src:%.c=$(BUILD_DIR)/%.o) $(asm:%.S=$(BUILD_DIR)/%.o) $(CORES:%=$(BUILD_DIR)/zcore_%.o)
+# The core links last and its code starts on a 16 KB boundary (the icache
+# size; N64Z80_ICACHE_ALIGN), so an edit to the core never moves the
+# harness's code in the direct-mapped icache: timings stay comparable.
+OBJS := $(src:%.c=$(BUILD_DIR)/%.o) $(asm:%.S=$(BUILD_DIR)/%.o) $(CORES:%=$(BUILD_DIR)/zcore_%.o) \
+	$(BUILD_DIR)/n64z80.o $(BUILD_DIR)/n64z80_asm.o
+N64_ASFLAGS += -DN64Z80_ICACHE_ALIGN
 
 N64_CFLAGS += -I. -Itest -Ireference -I$(BUILD_DIR)
 N64_ASFLAGS += -I. -I$(BUILD_DIR)

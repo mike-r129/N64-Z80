@@ -105,7 +105,10 @@ n64z80_prof_cyc: .space 4 * PROF_KEYS
 n64z80_prof_cnt: .space 4 * PROF_KEYS
 #endif
 
-    .text
+    .section .text.n64z80, "ax", @progbits
+#ifdef N64Z80_ICACHE_ALIGN
+    .balign 16384   # testsuite builds: fixed icache index of the core (Makefile)
+#endif
 
 # Profiling: count down to the next sample event (keeps t0, the opcode;
 # clobbers t1-t3, t9, ra).
