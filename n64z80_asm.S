@@ -1706,9 +1706,10 @@ OP 36                           # ld (hl),n
 # the first), reads the next opcode byte and jumps through that prefix's
 # table. The handler there charges the instruction's cycles, so any table
 # entry can instead be pfx_fallback, which takes the increment back,
-# rewinds to rPC0 and runs the whole instruction in C. One prefix with its operands is at most
-# 4 bytes, which the dispatch's limit check already covers; prefix chains
-# (DD DD, FD ED, ...) go to C.
+# rewinds to rPC0 and runs the whole instruction in C. One prefix with its
+# operands is at most 4 bytes, which the dispatch's limit check already
+# covers; a chain (DD DD, FD ED, ...) repeats the check at each further
+# prefix (ddfd_chain).
 
     COLD
 # NMI: no IFF2 change, +11, call 0x66.
@@ -1812,6 +1813,18 @@ ddfd_base:
     lw    t0, %gp_rel(n64z80_optab)(t0)
     jr    t0
      nop
+
+# A prefix after DD/FD (DD, ED, FD; exec_opcode_ddfd runs it as the
+# unprefixed opcode, i.e. as a new prefix): a chain. Its own handler reads
+# up to 4 bytes from rPC, so the limit check is repeated here.
+    COLD
+ddfd_chain:
+    sltu  t1, rPC, rLIM
+    bnez  t1, ddfd_base
+     nop
+    b     pfx_fallback
+     nop
+    HOT
 
 # Shared tails: rPC is at the opcode byte after the prefix; skip it and n-1
 # more bytes, next instruction.
@@ -3546,8 +3559,8 @@ n64z80_edtab:
     .endr
 
 # DD / FD: index-register handlers; index forms without one go to C; any
-# other opcode runs as the unprefixed one (ddfd_base) if that has a handler.
-# A second prefix (DD, ED, FD) is a chain: C.
+# other opcode runs as the unprefixed one (ddfd_base) if that has a handler,
+# a second prefix (DD, ED, FD) through ddfd_chain.
     .set CHAIN_DD, 1
     .set CHAIN_ED, 1
     .set CHAIN_FD, 1
@@ -3561,7 +3574,7 @@ n64z80_edtab:
     .word pfx_fallback
     .else
     .ifdef CHAIN_\hi\lo
-    .word pfx_fallback
+    .word ddfd_chain
     .else
     .ifdef op_\hi\lo
     .word ddfd_base

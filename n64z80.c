@@ -1,6 +1,6 @@
 // C side of the n64z80 core: init, and the C fallback that n64z80_asm.S
-// calls for the instructions it has no fast path for (prefix chains, an
-// instruction straddling a mapping boundary) and for IM 0 interrupts.
+// calls for an instruction that straddles a mapping boundary and for IM 0
+// interrupts.
 //
 // The fallback is the reference core itself: build/n64z80_ref.c is
 // reference/z80.c with its write_byte / port_out call sites rewritten to the
