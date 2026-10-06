@@ -342,23 +342,23 @@ slow_exit:
     ld    t0, N64Z80_OFF_EVENTS(rZ)
     ld    t1, N64Z80_OFF_EV_MASK(rZ)
     and   t0, t0, t1
-    beqz  t0, 2f
+    beqz  t0, se_test
      lbu  t0, N64Z80_OFF_IFF_DELAY(rZ)
-    lbu   t1, N64Z80_OFF_NMI_PENDING(rZ)
+    # process_interrupts: EI delay, else NMI, else an accepted INT.
+    bnez  t0, svc_delay
+     lbu  t1, N64Z80_OFF_NMI_PENDING(rZ)
     lbu   t2, N64Z80_OFF_INT_PENDING(rZ)
-    lbu   t3, N64Z80_OFF_IFF1(rZ)
-    or    t0, t0, t1
+    bnez  t1, svc_nmi
+     lbu  t3, N64Z80_OFF_IFF1(rZ)
     and   t2, t2, t3
-    or    t0, t0, t2
-    beqz  t0, 1f
+    bnez  t2, svc_int
      nop
-    la    t9, n64z80_c_service
-    jal   call_c
-     nop
-1:  lbu   t0, N64Z80_OFF_HALTED(rZ)
+se_halted:
+    lbu   t0, N64Z80_OFF_HALTED(rZ)
     bnez  t0, stop
      nop
-2:  bgez  rCYC, stop
+se_test:
+    bgez  rCYC, stop
      subu t0, rPC, rBIAS
     sltu  t1, rPC0, t0
     beqz  t1, stop
@@ -418,6 +418,19 @@ refetch:
 1:  subu  rPC0, rPC, rBIAS
     b     op_fallback
      addiu rN, rN, 1
+
+# EI delay (t0 = iff_delay > 0): count it down; at 0, IFF1 = IFF2 = 1.
+svc_delay:
+    addiu t0, t0, -1
+    bnez  t0, se_halted
+     sb   t0, N64Z80_OFF_IFF_DELAY(rZ)
+    li    t0, 1
+    sb    t0, N64Z80_OFF_IFF1(rZ)
+    sb    t0, N64Z80_OFF_IFF2(rZ)
+    li    t0, 0xFF
+    sb    t0, N64Z80_OFF_EVM_INT(rZ)
+    b     se_halted
+     sb   t0, N64Z80_OFF_EVM_LINE(rZ)
 
 # ---------------------------------------------------------------------------
 # C fallback: the whole instruction at rPC (== rPC0) runs in the reference.
@@ -1669,6 +1682,65 @@ OP 36                           # ld (hl),n
 # (DD DD, FD ED, ...) go to C.
 
     COLD
+# NMI: no IFF2 change, +11, call 0x66.
+svc_nmi:
+    sb    zero, N64Z80_OFF_NMI_PENDING(rZ)
+    li    t5, 0x66
+    b     svc_call
+     addiu rCYC, rCYC, 11
+
+# Accepted INT: IM 1 calls 0x38 (+13), IM 2 the vector at I << 8 |
+# int_data (+19); IM 0 executes int_data in the reference's C.
+svc_int:
+    lbu   t0, N64Z80_OFF_IM(rZ)
+    li    t1, 1
+    beq   t0, t1, 1f
+     li   t5, 0x38
+    li    t1, 2
+    bne   t0, t1, svc_c
+     lbu  t0, N64Z80_OFF_I(rZ)
+    lbu   t1, N64Z80_OFF_INT_DATA(rZ)
+    sll   t0, t0, 8
+    or    t0, t0, t1
+    READ8 t5, t0, t1
+    addiu t0, t0, 1
+    andi  t0, t0, 0xFFFF
+    READ8 t1, t0, t2
+    sll   t1, t1, 8
+    or    t5, t5, t1
+    addiu rCYC, rCYC, 6             # 19 in all
+1:  addiu rCYC, rCYC, 13
+    sb    zero, N64Z80_OFF_INT_PENDING(rZ)
+    sb    zero, N64Z80_OFF_IFF2(rZ)
+
+# Both: HALT ends, IFF1 = 0, R + 1, push PC, PC = WZ = t5. A write callback
+# in the push may poison: undo it, as the C service never poisons.
+svc_call:
+    sb    zero, N64Z80_OFF_HALTED(rZ)
+    sb    zero, N64Z80_OFF_IFF1(rZ)
+    sb    zero, N64Z80_OFF_EVM_INT(rZ)
+    sb    zero, N64Z80_OFF_EVM_LINE(rZ)
+    addiu rRB, rRB, 1
+    subu  t4, rPC, rBIAS
+    bal   push_t4
+     nop
+    sh    t5, N64Z80_OFF_MEM_PTR(rZ)
+    move  t0, t5
+    REMAP
+    lw    t0, %gp_rel(n64z80_cbase)(gp)
+    lw    t1, %gp_rel(n64z80_until)(gp)
+    subu  t0, t0, t1
+    addu  rCYC, rCYC, t0
+    b     se_halted
+     sw   t1, %gp_rel(n64z80_cbase)(gp)
+
+svc_c:
+    la    t9, n64z80_c_service
+    jal   call_c
+     nop
+    b     se_halted
+     nop
+
 pfx_fallback:
     move  t0, rPC0
     REMAP
