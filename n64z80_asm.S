@@ -58,9 +58,15 @@
 #define rPC0   t8    // Z80 address of the current instruction
 #define rRB    $at   // rbase (lazy R); C clobbers it: kept in R across calls
 
-# Stack frame: o64 argument home area, callee-saved registers, rZ, and the
-# registers wr8 keeps across a write callback.
-#define FRAME   192
+# Save area: callee-saved registers, rZ, and the registers kept across
+# owner callbacks. It is not on the stack but in the core's own data
+# (n64z80_frame; the core is not reentrant), so its dcache sets do not
+# depend on the caller's stack depth. The stack frame is only the o64
+# argument home area (FRAME) for the C functions the core calls. Slot
+# offsets count from the frame's start, as when the area was on the stack.
+#define FRAME    32
+#define SAVE    192   // FRAME + the save area
+#define FR(x)   %gp_rel(n64z80_frame+(x)-FRAME)(gp)
 #define F_S0     32
 #define F_RA    104
 #define F_Z     112
@@ -74,12 +80,12 @@
 #
 # Data layout, by dcache set (8 KB, 16-byte lines). Subsection 0 holds the
 # data nearly every instruction touches: optab (0x000), fdtab (0x400), sz53p
-# (0x800), cycdd (0x900); subsection 1 these variables (0xA00); subsection 2
-# the tables only some prefixed instructions use (cbtab, xcbtab, edtab,
-# ddtab) and the bounce buffer, from about 0xA40. With N64Z80_DCACHE_ALIGN
-# the block starts on an 8 KB boundary, so those offsets are the sets, and
-# the owner's per-instruction data (rmap, wmap, Z80 RAM, the struct) belongs
-# in sets 0xA40-0x1FFF, clear of the hot part. Without the alignment the
+# (0x800), cycdd (0x900); subsection 1 these variables and the save area
+# (0xA00-0xAEF); subsection 2 the tables only some prefixed instructions
+# use (cbtab, xcbtab, edtab, ddtab) and the bounce buffer, from 0xAF0. With
+# N64Z80_DCACHE_ALIGN the block starts on an 8 KB boundary, so those
+# offsets are the sets, and the owner's per-instruction data (rmap, wmap,
+# Z80 RAM, the struct) belongs in sets 0xB00-0x1FFF, clear of the hot part. Without the alignment the
 # block is 16-byte aligned: adding a variable never regroups table entries
 # into different lines (an 8-byte shift once cost 2%).
     .section .sdata
@@ -95,6 +101,8 @@ n64z80_pc0:     .word 0     # rPC0 across C calls
 n64z80_lastpc:  .word 0     # the run's last_pc pointer
 n64z80_wmap:    .word 0     # write page map (n64z80_set_wmap), or 0
 n64z80_im0:     .word 0     # IM 0 instruction running: 0x10000 | pc0
+    .balign 8
+n64z80_frame:   .space SAVE - FRAME   # the save area (FR)
     .globl n64z80_nfallback
 n64z80_nfallback: .word 0   # instructions run by the C fallback (statistics)
 #ifdef N64Z80_PROF
@@ -294,17 +302,17 @@ n64z80_prof_cnt: .space 4 * PROF_KEYS
 # a1 = until, a2 = last_pc (0 for a step), rebuild ev_mask, load the state.
 .macro PROLOGUE
     addiu sp, sp, -FRAME
-    sd    s0, F_S0+0(sp)
-    sd    s1, F_S0+8(sp)
-    sd    s2, F_S0+16(sp)
-    sd    s3, F_S0+24(sp)
-    sd    s4, F_S0+32(sp)
-    sd    s5, F_S0+40(sp)
-    sd    s6, F_S0+48(sp)
-    sd    s7, F_S0+56(sp)
-    sd    s8, F_S0+64(sp)
-    sd    ra, F_RA(sp)
-    sw    a0, F_Z(sp)
+    sd    s0, FR(F_S0+0)
+    sd    s1, FR(F_S0+8)
+    sd    s2, FR(F_S0+16)
+    sd    s3, FR(F_S0+24)
+    sd    s4, FR(F_S0+32)
+    sd    s5, FR(F_S0+40)
+    sd    s6, FR(F_S0+48)
+    sd    s7, FR(F_S0+56)
+    sd    s8, FR(F_S0+64)
+    sd    ra, FR(F_RA)
+    sw    a0, FR(F_Z)
     sw    a1, %gp_rel(n64z80_until)(gp)
     sw    a1, %gp_rel(n64z80_cbase)(gp)
     sw    a2, %gp_rel(n64z80_lastpc)(gp)
@@ -564,22 +572,22 @@ op_fallback:
 # bytes are already copied, and unbounce maps the PC again afterwards with
 # the stop test (load_state's 16-bit PC would hide a wrap past 0xFFFF).
 call_c:
-    sw    ra, F_RA2(sp)
-    sw    rLIM, F_BN+0(sp)
-    sw    rPC, F_BN+4(sp)
-    sw    rBIAS, F_BN+8(sp)
+    sw    ra, FR(F_RA2)
+    sw    rLIM, FR(F_BN+0)
+    sw    rPC, FR(F_BN+4)
+    sw    rBIAS, FR(F_BN+8)
     jal   save_state
      sw   rPC0, %gp_rel(n64z80_pc0)(gp)
     jalr  t9
      nop
-    lw    rZ, F_Z(sp)
+    lw    rZ, FR(F_Z)
     jal   load_state
      lw   rPC0, %gp_rel(n64z80_pc0)(gp)
-    lw    t0, F_BN+0(sp)
+    lw    t0, FR(F_BN+0)
     bnez  t0, 1f
-     lw   ra, F_RA2(sp)
-    lw    rPC, F_BN+4(sp)
-    lw    rBIAS, F_BN+8(sp)
+     lw   ra, FR(F_RA2)
+    lw    rPC, FR(F_BN+4)
+    lw    rBIAS, FR(F_BN+8)
     move  rLIM, zero
 1:  jr    ra
      nop
@@ -667,16 +675,16 @@ stop:
     sh    rPC0, 0(t2)
     move  v0, rN
 ret_regs:
-    ld    s0, F_S0+0(sp)
-    ld    s1, F_S0+8(sp)
-    ld    s2, F_S0+16(sp)
-    ld    s3, F_S0+24(sp)
-    ld    s4, F_S0+32(sp)
-    ld    s5, F_S0+40(sp)
-    ld    s6, F_S0+48(sp)
-    ld    s7, F_S0+56(sp)
-    ld    s8, F_S0+64(sp)
-    ld    ra, F_RA(sp)
+    ld    s0, FR(F_S0+0)
+    ld    s1, FR(F_S0+8)
+    ld    s2, FR(F_S0+16)
+    ld    s3, FR(F_S0+24)
+    ld    s4, FR(F_S0+32)
+    ld    s5, FR(F_S0+40)
+    ld    s6, FR(F_S0+48)
+    ld    s7, FR(F_S0+56)
+    ld    s8, FR(F_S0+64)
+    ld    ra, FR(F_RA)
     jr    ra
      addiu sp, sp, FRAME
 step_stop:
@@ -837,20 +845,20 @@ wr8:
     jr    ra
      sb   t1, 0(a1)
 wr8_cb:
-    sw    ra, F_WR+0(sp)
-    sw    t2, F_WR+4(sp)
-    sw    t3, F_WR+8(sp)
-    sw    t4, F_WR+12(sp)
-    sw    t5, F_WR+16(sp)
-    sw    t6, F_WR+20(sp)
-    sw    t7, F_WR+24(sp)
-    sw    t8, F_WR+28(sp)
+    sw    ra, FR(F_WR+0)
+    sw    t2, FR(F_WR+4)
+    sw    t3, FR(F_WR+8)
+    sw    t4, FR(F_WR+12)
+    sw    t5, FR(F_WR+16)
+    sw    t6, FR(F_WR+20)
+    sw    t7, FR(F_WR+24)
+    sw    t8, FR(F_WR+28)
     subu  t9, rPC, rBIAS
     andi  t9, t9, 0xFFFF
-    sw    t9, F_WR+32(sp)
-    sw    rRB, F_WR+36(sp)
-    sw    rLIM, F_BN+0(sp)
-    sw    rBIAS, F_BN+8(sp)
+    sw    t9, FR(F_WR+32)
+    sw    rRB, FR(F_WR+36)
+    sw    rLIM, FR(F_BN+0)
+    sw    rBIAS, FR(F_BN+8)
     lw    t9, %gp_rel(n64z80_cbase)(gp)
     addu  t9, t9, rCYC
     sw    t9, N64Z80_OFF_CYC(rZ)
@@ -859,26 +867,26 @@ wr8_cb:
     move  a2, t1
     jalr  t9
      lw   a0, N64Z80_OFF_USERDATA(rZ)
-    lw    rZ, F_Z(sp)
+    lw    rZ, FR(F_Z)
     lw    rRMAP, N64Z80_OFF_RMAP(rZ)
-    lw    rRB, F_WR+36(sp)
-    lw    t0, F_BN+0(sp)
+    lw    rRB, FR(F_WR+36)
+    lw    t0, FR(F_BN+0)
     bnez  t0, 1f
-     lw   t0, F_WR+32(sp)
-    lw    rBIAS, F_BN+8(sp)         # bouncing: stay in the copy (as call_c)
+     lw   t0, FR(F_WR+32)
+    lw    rBIAS, FR(F_BN+8)         # bouncing: stay in the copy (as call_c)
     b     2f
      move rLIM, zero
 1:  REMAP
 2:  POISON_IF_EVENTS
-    lw    ra, F_WR+0(sp)
-    lw    t2, F_WR+4(sp)
-    lw    t3, F_WR+8(sp)
-    lw    t4, F_WR+12(sp)
-    lw    t5, F_WR+16(sp)
-    lw    t6, F_WR+20(sp)
-    lw    t7, F_WR+24(sp)
+    lw    ra, FR(F_WR+0)
+    lw    t2, FR(F_WR+4)
+    lw    t3, FR(F_WR+8)
+    lw    t4, FR(F_WR+12)
+    lw    t5, FR(F_WR+16)
+    lw    t6, FR(F_WR+20)
+    lw    t7, FR(F_WR+24)
     jr    ra
-     lw   t8, F_WR+28(sp)
+     lw   t8, FR(F_WR+28)
 
 # Push t4 (16-bit) as the reference's pushw: SP -= 2, low byte at SP, high
 # byte at SP+1 (bal). Keeps t2-t6; clobbers t0, t1, t7, t9.
@@ -3498,19 +3506,19 @@ EDOP B9
 # v0 = port_in(z, t0). bal; keeps rPC0; clobbers the caller-saved registers.
     HOT
 port_in:
-    sw    ra, F_WR+0(sp)
+    sw    ra, FR(F_WR+0)
     move  a1, t0
     lw    t9, N64Z80_OFF_PORT_IN(rZ)
     jal   call_c
      nop
     POISON_IF_EVENTS
-    lw    ra, F_WR+0(sp)
+    lw    ra, FR(F_WR+0)
     jr    ra
      nop
 
 # port_out(z, t0, t1). bal; as port_in.
 port_out:
-    sw    ra, F_WR+0(sp)
+    sw    ra, FR(F_WR+0)
     sw    rN, %gp_rel(n64z80_lastw)(gp)
     move  a1, t0
     move  a2, t1
@@ -3518,7 +3526,7 @@ port_out:
     jal   call_c
      nop
     POISON_IF_EVENTS
-    lw    ra, F_WR+0(sp)
+    lw    ra, FR(F_WR+0)
     jr    ra
      nop
 
@@ -3529,11 +3537,11 @@ OP DB
     lbu   t0, 1(rPC)
     addiu rPC, rPC, 2
     sll   t1, rA, 8
-    sw    t1, F_WR+4(sp)        # A_old << 8 (the stack slot survives the call)
+    sw    t1, FR(F_WR+4)        # A_old << 8 (the stack slot survives the call)
     bal   port_in
      or   t0, t0, t1
     andi  rA, v0, 0xFF
-    lw    t1, F_WR+4(sp)
+    lw    t1, FR(F_WR+4)
     addiu t0, rA, 1
     or    t0, t0, t1
     b     dispatch
@@ -3544,12 +3552,12 @@ OP D3
     CHARGE D3
     lbu   t0, 1(rPC)
     addiu rPC, rPC, 2
-    sw    t0, F_WR+4(sp)
+    sw    t0, FR(F_WR+4)
     sll   t1, rA, 8
     or    t0, t0, t1
     bal   port_out
      move t1, rA
-    lw    t0, F_WR+4(sp)
+    lw    t0, FR(F_WR+4)
     sll   t1, rA, 8
     addiu t0, t0, 1
     or    t0, t0, t1
@@ -3630,7 +3638,7 @@ OP 27                           # daa (the reference's daa())
 # in_r_c: t2 = port_in(BC); S Z P from it, H = N = 0, Y X C kept.
     HOT
 in_bc:
-    sw    ra, F_IO+0(sp)
+    sw    ra, FR(F_IO+0)
     bal   port_in
      move t0, rBC
     andi  t2, v0, 0xFF
@@ -3639,7 +3647,7 @@ in_bc:
     andi  rF, rF, 0x29
     andi  t0, t0, 0xC4
     or    rF, rF, t0
-    lw    ra, F_IO+0(sp)
+    lw    ra, FR(F_IO+0)
     jr    ra
      nop
 
@@ -3695,31 +3703,31 @@ EDOP \op
 # rPC is at the second opcode byte. bal.
     RARE
 inx_core:
-    sw    ra, F_IO+0(sp)
-    sw    a1, F_IO+4(sp)
+    sw    ra, FR(F_IO+0)
+    sw    a1, FR(F_IO+4)
     addiu rPC, rPC, 1           # the reference's PC at the call
     bal   port_in
      move t0, rBC
     move  t0, rHL
     bal   wr8
      andi t1, v0, 0xFF
-    lw    a1, F_IO+4(sp)
+    lw    a1, FR(F_IO+4)
     addiu rPC, rPC, -1
     b     ioblk_regs
-     lw   ra, F_IO+0(sp)
+     lw   ra, FR(F_IO+0)
 
 # outi / outd (outi(), outd()): port_out(BC, (HL)) with B not yet
 # decremented; then as ini / ind.
 outx_core:
-    sw    ra, F_IO+0(sp)
-    sw    a1, F_IO+4(sp)
+    sw    ra, FR(F_IO+0)
+    sw    a1, FR(F_IO+4)
     READ8 t1, rHL, t0
     addiu rPC, rPC, 1
     bal   port_out
      move t0, rBC
-    lw    a1, F_IO+4(sp)
+    lw    a1, FR(F_IO+4)
     addiu rPC, rPC, -1
-    lw    ra, F_IO+0(sp)
+    lw    ra, FR(F_IO+0)
 ioblk_regs:
     addu  rHL, rHL, a1
     andi  rHL, rHL, 0xFFFF

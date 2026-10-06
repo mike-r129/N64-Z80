@@ -27,12 +27,12 @@ static uint32_t now32(void) { return 0; }
 static const uint32_t win_base[4] = { 0x8000, 0xC000, 0xE000, 0xF000 };
 static const uint32_t win_size[4] = { 0x4000, 0x2000, 0x1000, 0x0800 };
 // The owner data the core touches on every instruction, at a fixed dcache
-// position: sets 0xA40 up, clear of the core's hot tables (n64z80_asm.S,
+// position: sets 0xB00 up, clear of the core's hot tables (n64z80_asm.S,
 // N64Z80_DCACHE_ALIGN), as recommended for mvs64. The replay's own state,
 // touched on every run and port callback, follows in the free sets after
 // wmap, so no build's data layout moves the trace timings.
 static struct {
-  uint8_t pad[0xA40];
+  uint8_t pad[0xB00];
   uint8_t ram[0x800];
   uintptr_t rmap[256], wmap[256];
   const zcore* core;
