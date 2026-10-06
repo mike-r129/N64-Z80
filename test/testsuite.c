@@ -2,9 +2,9 @@
 // verdict line starts with ">>> PASS" or ">>> FAIL", and the run ends with
 // the done marker (tools/ares-run.ps1 stops ares when it sees it).
 //
-// M0: the "candidate" core is still the reference (NEW = an unmodified copy),
-// so this validates the harness itself: C vs C must be clean and every
-// planted-bug mutant must be caught.
+// The candidate is the asm core (ASM, n64z80.h). M1: its run loop is asm and
+// every instruction still executes in the C fallback. The planted-bug
+// mutants must still be caught (the harness still checks something).
 #include <libdragon.h>
 #include <string.h>
 #include "zdiff.h"
@@ -34,6 +34,10 @@ const uint8_t z80_rodata_anchor[1] = { 0 };
 
 extern const uint8_t zex_prelim[], zex_prelim_end[];
 extern const uint8_t zex_zexdoc[], zex_zexdoc_end[];
+extern const uint8_t zex_zexall[], zex_zexall_end[];
+
+// n64z80.c: fallback entries whose asm fetch pointer disagreed with the rmap.
+extern uint32_t n64z80_fetch_mismatch;
 
 static int failures;
 
@@ -47,15 +51,15 @@ static void verdict(int ok, const char* fmt, const char* what, long a, long b) {
 static void run_zdiff(void) {
   zdiff_cfg cfg = { .cases = ZDIFF_CASES, .seed = ZDIFF_SEED, .max_report = 4 };
   uint32_t t0 = TICKS_READ();
-  long bad = zdiff(&REF_core, &NEW_core, &cfg);
+  long bad = zdiff(&REF_core, &ASM_core, &cfg);
   uint32_t ms = TICKS_TO_MS(TICKS_SINCE(t0));
-  verdict(bad == 0, "zdiff %s: %ld cases, %ld mismatches", "REF vs NEW", cfg.cases, bad);
+  verdict(bad == 0, "zdiff %s: %ld cases, %ld mismatches", "REF vs ASM", cfg.cases, bad);
   tlog("    (%lu ms, %lu cases/s)\n", (unsigned long)ms, (unsigned long)(ms ? cfg.cases * 1000 / ms : 0));
 
   cfg.direct = 1;
   cfg.cases = ZDIFF_CASES / 4;
-  bad = zdiff(&REF_core, &NEW_core, &cfg);
-  verdict(bad == 0, "zdiff %s: %ld cases, %ld mismatches", "REF vs NEW (direct-write filter)", cfg.cases, bad);
+  bad = zdiff(&REF_core, &ASM_core, &cfg);
+  verdict(bad == 0, "zdiff %s: %ld cases, %ld mismatches", "REF vs ASM (direct-write filter)", cfg.cases, bad);
 
   // Negative controls: each planted bug must produce mismatches.
   const zcore* mut[] = { &MUT1_core, &MUT2_core, &MUT3_core, &MUT4_core };
@@ -68,35 +72,44 @@ static void run_zdiff(void) {
   }
 }
 
-static void run_zex(const zcore* core) {
-  size_t len = zex_prelim_end - zex_prelim;
-  zex_result r = zex_run(core, zex_prelim, len, -1, 0, 0);
-  int ok = r.complete == 1 && !r.err && r.steps == 899 && r.cycles == 8721;
-  verdict(ok, "prelim on %s: %ld instructions, %ld cycles (expect 899, 8721)", core->name,
-          (long)r.steps, (long)r.cycles);
-
-  len = zex_zexdoc_end - zex_zexdoc;
-  int groups = zex_groups(zex_zexdoc, len), ran = 0, passed = 0;
+// Every group of `img` with at most ZEX_MAX_STEPS instructions, each run
+// alone through z80_run and checked against the reference's exact
+// instruction and cycle counts in that mode (zex_expect.h).
+static void run_zex_groups(const zcore* core, const char* name, const uint8_t* img, size_t len,
+                           const zex_expect* expect) {
+  int groups = zex_groups(img, len), ran = 0, passed = 0;
   uint64_t steps = 0, ticks = 0;
   for (int g = 0; g < groups; g++) {
-    const zex_expect* e = &zexdoc_expect[g];
-    if (ZEX_MAX_STEPS && e->steps > ZEX_MAX_STEPS) continue;
-    r = zex_run(core, zex_zexdoc, len, g, 0, 1);
-    ok = r.ok == 1 && !r.err && r.complete == 1 && r.steps == e->steps && r.cycles == e->cycles;
+    const zex_expect* e = &expect[g];
+    if (ZEX_MAX_STEPS && e->run_steps > ZEX_MAX_STEPS) continue;
+    zex_result r = zex_run(core, img, len, g, 1, 1);
+    int ok = r.ok == 1 && !r.err && r.complete == 1 && r.steps == e->run_steps &&
+             r.cycles == e->run_cycles;
     if (!ok)
-      tlog("    zexdoc %2d %s: ok=%d err=%d steps %llu/%llu cycles %llu/%llu\n", g,
-           zex_group_name(zex_zexdoc, len, g), r.ok, r.err, (unsigned long long)r.steps,
-           (unsigned long long)e->steps, (unsigned long long)r.cycles, (unsigned long long)e->cycles);
+      tlog("    %s %2d %s: ok=%d err=%d steps %llu/%llu cycles %llu/%llu\n", name, g,
+           zex_group_name(img, len, g), r.ok, r.err, (unsigned long long)r.steps,
+           (unsigned long long)e->run_steps, (unsigned long long)r.cycles,
+           (unsigned long long)e->run_cycles);
     ran++; passed += ok;
     steps += r.steps; ticks += r.ticks;
   }
   char what[48];
-  snprintf(what, sizeof what, "zexdoc on %s", core->name);
-  verdict(passed == ran, "%s: %ld/%ld groups exact (steps, cycles, CRC)", what, passed, ran);
+  snprintf(what, sizeof what, "%s on %s", name, core->name);
+  verdict(passed == ran, "%s: %ld/%ld groups exact through z80_run (steps, cycles, CRC)", what,
+          passed, ran);
   if (steps)
-    tlog("[BENCH] %s zexdoc subset: %lu ns/instr  (%llu instr, %lu ms)\n", core->name,
+    tlog("[BENCH] %s %s subset: %lu ns/instr  (%llu instr, %lu ms)\n", core->name, name,
          (unsigned long)(ticks * 1000000000ull / TICKS_PER_SECOND / steps), (unsigned long long)steps,
          (unsigned long)(ticks / (TICKS_PER_SECOND / 1000)));
+}
+
+static void run_zex(const zcore* core) {
+  zex_result r = zex_run(core, zex_prelim, zex_prelim_end - zex_prelim, -1, 1, 0);
+  int ok = r.complete == 1 && !r.err && r.steps == 904 && r.cycles == 8754;
+  verdict(ok, "prelim on %s: %ld instructions, %ld cycles through z80_run (expect 904, 8754)",
+          core->name, (long)r.steps, (long)r.cycles);
+  run_zex_groups(core, "zexdoc", zex_zexdoc, zex_zexdoc_end - zex_zexdoc, zexdoc_expect);
+  run_zex_groups(core, "zexall", zex_zexall, zex_zexall_end - zex_zexall, zexall_expect);
 }
 
 static int ends_with(const char* s, const char* suf) {
@@ -106,7 +119,7 @@ static int ends_with(const char* s, const char* suf) {
 
 // Replays every mvs64 owner trace in the ROM filesystem (test/traces/*.z80t,
 // packed by the Makefile when present): REF gives the baseline speed on real
-// driver code, NEW must replay clean, MUT1 must be caught.
+// driver code, ASM must replay clean, MUT1 must be caught.
 static void run_traces(void) {
   char names[8][64];
   int n = 0;
@@ -133,7 +146,7 @@ static void run_traces(void) {
       continue;
     }
     fclose(f);
-    const zcore* cores[] = { &REF_core, &NEW_core, &MUT1_core };
+    const zcore* cores[] = { &REF_core, &ASM_core, &MUT1_core };
     for (int c = 0; c < 3; c++) {
       replay_result r = replay(cores[c], tr, len, c < 2 ? 4 : 0);
       char what[96];
@@ -142,7 +155,7 @@ static void run_traces(void) {
         verdict(r.ended && !r.bad, "%s: %ld instr, %ld mismatches", what, r.steps, r.bad);
       else
         verdict(r.bad || !r.ended, "%s: %ld mismatches, control (must be > 0)", what, r.bad, 0);
-      if (c == 0 && r.steps)
+      if (c < 2 && r.steps)
         tlog("[BENCH] %s trace %-20s %5lu ns/instr  %4lu cycles/instr  (%ld instr, %ld runs)\n",
              cores[c]->name, names[i],
              (unsigned long)(r.ticks * 1000000000ull / TICKS_PER_SECOND / r.steps),
@@ -156,14 +169,17 @@ int main(void) {
   debug_init_isviewer();
   debug_init_usblog();
   dfs_init(DFS_DEFAULT_LOCATION);
-  tlog("\nN64Z80 testsuite (M0: reference vs reference)\n");
+  tlog("\nN64Z80 testsuite (M1: asm run loop, C fallback for every opcode)\n");
   tlog("config: ZDIFF_CASES=%d ZDIFF_SEED=%d ZEX_MAX_STEPS=%d\n", ZDIFF_CASES, ZDIFF_SEED, ZEX_MAX_STEPS);
 
   run_zdiff();
   run_traces();
   bench_core(&REF_core);
+  bench_core(&ASM_core);
   bench_window_copy();
-  run_zex(&NEW_core);
+  run_zex(&ASM_core);
+  verdict(n64z80_fetch_mismatch == 0, "%s: %ld fetch pointer mismatches (%ld)", "ASM rmap mapping",
+          (long)n64z80_fetch_mismatch, 0);
 
   tlog(">>> SUMMARY %s: %d failure(s)\n", failures ? "FAIL" : "PASS", failures);
   tlog("%s\n", DONE_MARKER);
