@@ -83,7 +83,42 @@ n64z80_nfallback: .word 0   # instructions run by the C fallback (statistics)
 # S, Z, Y, X and P/V of each result byte (the reference's table).
 n64z80_sz53p:   .byte N64Z80_SZ53P
 
-    .text
+# Code placement. The handlers of the most frequent instructions, the
+# dispatch support and the run loop go in .text.n64z80hot, so they share
+# icache lines instead of being spread over the whole core; everything else
+# goes in .text.n64z80cold. The hot list is the Metal Slug sound driver's
+# opcode profile (trace mslug_36s_10s, docs/measurements.md): every opcode
+# above ~0.3% of the instructions.
+.macro HOT
+    .section .text.n64z80hot, "ax", @progbits
+.endm
+.macro COLD
+    .section .text.n64z80cold, "ax", @progbits
+.endm
+.macro PLACE name
+  .ifdef HOT_\name
+    HOT
+  .else
+    COLD
+  .endif
+.endm
+    .irp op, 28,FD,A7,7E,21,23,CA,3A,77,6F,08,ED,E6,2C,C4,CD,C9,BE,DD,20
+    .set HOT_\op, 1
+    .endr
+    .irp op, EB,3D,4F,26,19,9F,0E,4E,7D,2D,46,78,CB,30,81,86,47,24,3E,5F
+    .set HOT_\op, 1
+    .endr
+    .irp op, 5E,C8,C2,DE,91,22,B0,FE,0F,32,87,AF,00,15,79,29,7A,F2,2A,C3
+    .set HOT_\op, 1
+    .endr
+    .irp op, FD_CB,FD_21,FD_7E,FD_56,FD_6E,FD_2A,FD_77,FD_5E,DD_21
+    .set HOT_\op, 1
+    .endr
+    .irp op, ED_5B,ED_42,ED_52,ED_53,ED_51,ED_59,ED_78,CB_57,CB_66
+    .set HOT_\op, 1
+    .endr
+
+    HOT
 
 # Next instruction, after the previous one's tail: run out / event check,
 # then the fetch.
@@ -271,6 +306,8 @@ refetch:
 # The fallback re-executes the instruction's R increments, so give back the
 # one dispatch counted before materializing R.
     .balign 32
+    COLD
+    .balign 4
 op_fallback:
     lw    t0, %gp_rel(n64z80_rbase)(gp)
     lw    t1, %gp_rel(n64z80_nfallback)(gp)
@@ -293,6 +330,7 @@ op_fallback:
 # ---------------------------------------------------------------------------
 # Call the C function t9(rZ, a1) with the state written back to the struct,
 # then reload it (the callee may change anything, including the rmap).
+    HOT
 call_c:
     sw    ra, F_RA2(sp)
     jal   save_state
@@ -410,6 +448,7 @@ n64z80_set_wmap:
 # case by case (reference/z80.c exec_main / exec_opcode_slow).
 
 .macro OP op
+    PLACE \op
 op_\op:
 .endm
 
@@ -523,6 +562,7 @@ op_\op:
 .endm
 
 # ---------------------------------------------------------------------------
+    HOT
 # Shared pieces.
 
 # Write byte t1 to Z80 address t0 (bal; rN marks the instruction as
@@ -1505,6 +1545,7 @@ OP 36                           # ld (hl),n
 # 4 bytes, which the dispatch's limit check already covers; prefix chains
 # (DD DD, FD ED, ...) go to C.
 
+    COLD
 pfx_fallback:
     move  t0, rPC0
     REMAP
@@ -1540,6 +1581,7 @@ OP FD
 
 # DD/FD before an opcode exec_opcode_ddfd does not handle itself: it runs as
 # the unprefixed opcode (t0 = it, rPC at it) after cyc_ddfd[op] and R + 1.
+    HOT
 ddfd_base:
     addu  t1, t0, gp
     lbu   t1, %gp_rel(n64z80_cycdd)(t1)
@@ -1565,6 +1607,7 @@ next3:
 
 # Rotate/shift cores (cb_rlc ... cb_srl): t0 = byte -> t2 = result,
 # F = sz53p[result] | C (bal). Clobbers t1, t3.
+    COLD
 rot_rlc:
     srl   t1, t0, 7
     sll   t2, t0, 1
@@ -1639,6 +1682,7 @@ rot_flags:
 # byte.
 
 .macro CBOP op
+    PLACE CB_\op
 op_CB_\op:
     addiu rCYC, rCYC, 8
     RBUMP
@@ -1714,6 +1758,7 @@ CBOP \op
 # result to register z unless z = 6. cyc_ddfd[CB] is 0.
 
 .macro XC_ROT op, core, r
+    COLD
 op_XC_\op:
     RBUMP
     sh    t5, N64Z80_OFF_MEM_PTR(rZ)
@@ -1728,6 +1773,7 @@ op_XC_\op:
 .endm
 
 .macro XC_BIT y, o0, o1, o2, o3, o4, o5, o6, o7
+    HOT
 op_XC_\o0:
 op_XC_\o1:
 op_XC_\o2:
@@ -1748,6 +1794,7 @@ op_XC_\o7:
 .endm
 
 .macro XC_RES_SET op, set, y, r
+    COLD
 op_XC_\op:
     RBUMP
     sh    t5, N64Z80_OFF_MEM_PTR(rZ)
@@ -1765,6 +1812,7 @@ op_XC_\op:
 .endm
 
 # Write t2 to (IZ+d) = t5, +23, next instruction.
+    COLD
 xc_write:
     move  t0, t5
     bal   wr8
@@ -1779,6 +1827,7 @@ xc_write:
 # ix, the low byte at ix+1.
 
 .macro IZOP p, op
+    PLACE \p\()_\op
 op_\p\()_\op:
     addiu rCYC, rCYC, CYCDD_\op
     RBUMP
@@ -2083,6 +2132,7 @@ IZOP \p, F9                       # ld sp,iz
 
 # DD CB d op / FD CB d op: t5 = the address, then the shared DDCB table on
 # op (at rPC+2; rPC is at the CB byte). No state changes here.
+    PLACE \p\()_CB
 op_\p\()_CB:
     lhu   t5, \ix(rZ)
     lb    t9, 1(rPC)
@@ -2104,6 +2154,7 @@ op_\p\()_CB:
 # ops stay in C for now (port callbacks need the full state written back).
 
 .macro EDOP op
+    PLACE ED_\op
 op_ED_\op:
     addiu rCYC, rCYC, CYCED_\op
     RBUMP
@@ -2111,6 +2162,7 @@ op_ED_\op:
 
 # Every ED opcode exec_opcode_ed doesn't implement: an 8-cycle NOP
 # (gen_tables.py checks the 8).
+    COLD
 ed_nop:
     addiu rCYC, rCYC, 8
     RBUMP
@@ -2205,6 +2257,7 @@ EDOP \op
     ED_ADC_SBC 62, 1, rHL
     ED_ADC_SBC 72, 1, rSP
 
+    COLD
 op_ED_44:                         # neg (all eight encodings): subb(0, A, 0)
 op_ED_4C:
 op_ED_54:
@@ -2277,6 +2330,7 @@ ld_a_ir:
 
 # retn (seven encodings): IFF1 = IFF2 (set_iff1: the INT/IRQ event lanes
 # follow), then ret. reti: ret only.
+    COLD
 op_ED_45:
 op_ED_55:
 op_ED_5D:
@@ -2339,6 +2393,7 @@ ed_rxd:
 # ldi / ldd core (ldi()): (DE) = (HL), HL and DE step by t6 (+1 / -1),
 # BC - 1; Y/X from bits 1/3 of (byte + A), H = N = 0, P/V = BC != 0, S Z C
 # kept. bal; clobbers t0-t3, t5, t7, t9.
+    COLD
 ldx_core:
     move  t7, ra
     READ8 t5, rHL, t0
@@ -2397,6 +2452,7 @@ ldxr_tail:
 # cpi / cpd core (cpi()): subb(A, (HL), 0) with C kept, HL += a1, BC - 1,
 # Y/X from bits 1/3 of (result - H), P/V = BC != 0, WZ += a1 (the step:
 # ADDB clobbers t2-t7). bal; clobbers t0-t7, t9.
+    COLD
 cpx_core:
     andi  t9, rF, 1
     READ8 t0, rHL, t1
@@ -2947,6 +3003,7 @@ EDOP B9
 # check. OUT marks the instruction as writing.
 
 # v0 = port_in(z, t0). bal; keeps rPC0; clobbers the caller-saved registers.
+    HOT
 port_in:
     sw    ra, F_WR+0(sp)
     move  a1, t0
@@ -3078,6 +3135,7 @@ OP 27                           # daa (the reference's daa())
 # ED I/O: in r,(C) / out (C),r and the block forms. The port is B << 8 | C.
 
 # in_r_c: t2 = port_in(BC); S Z P from it, H = N = 0, Y X C kept.
+    HOT
 in_bc:
     sw    ra, F_IO+0(sp)
     bal   port_in
@@ -3142,6 +3200,7 @@ EDOP \op
 # ini / ind (ini(), ind()): (HL) = port_in(BC); HL += a1; B - 1;
 # Z = (B == 0), N = 1, the rest kept; WZ = BC + 1 (ini) / BC - 2 (ind).
 # rPC is at the second opcode byte. bal.
+    COLD
 inx_core:
     sw    ra, F_IO+0(sp)
     sw    a1, F_IO+4(sp)
