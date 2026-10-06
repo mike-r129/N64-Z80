@@ -2674,10 +2674,22 @@ EDOP 47                           # ld i,a
     b     dispatch
      addiu rPC, rPC, 1
 
-EDOP 4F                           # ld r,a: R = A after the instruction
+# dst = the DD/FD prefixes before this ED (a chain; rPC is at the byte after
+# the ED). The reference runs the ED instruction inside them and takes one
+# R increment back per prefix afterwards, so inside it R is that much higher.
+.macro CHAIN_DEPTH dst
+    subu  \dst, rPC, rBIAS
+    addiu \dst, \dst, -1
+    subu  \dst, \dst, rPC0
+    andi  \dst, \dst, 0xFFFF
+.endm
+
+EDOP 4F                           # ld r,a: R = A, less the chain's take-back
     andi  t0, rA, 0x80
     sw    t0, %gp_rel(n64z80_rhi)(gp)
+    CHAIN_DEPTH t1
     subu  rRB, rA, rN
+    subu  rRB, rRB, t1
     b     dispatch
      addiu rPC, rPC, 1
 
@@ -2686,8 +2698,10 @@ EDOP 57                           # ld a,i
     b     ld_a_ir
      lbu  rA, N64Z80_OFF_I(rZ)
 EDOP 5F                           # ld a,r (R after both increments)
+    CHAIN_DEPTH t2
     lw    t1, %gp_rel(n64z80_rhi)(gp)
     addu  t0, rRB, rN
+    addu  t0, t0, t2
     andi  t0, t0, 0x7F
     or    rA, t0, t1
 ld_a_ir:
