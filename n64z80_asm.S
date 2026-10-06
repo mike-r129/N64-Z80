@@ -596,8 +596,17 @@ push_t4:
 # Control transfer to Z80 address t0 (16-bit): loop-edge test against rPC0,
 # remap, next instruction.
 jp_to:
-    sltu  t1, rPC0, t0
-    REMAP
+    subu  t2, rPC, rBIAS
+    xor   t2, t2, t0
+    srl   t2, t2, 8
+    bnez  t2, 1f
+     sltu t1, rPC0, t0
+    # Same 256-byte page as rPC, whose mapping (rBIAS, rLIM) is current even
+    # after a callback in this instruction (those remap rPC's page).
+    beqz  t1, slow_exit
+     addu rPC, rBIAS, t0
+    DISPATCH
+1:  REMAP
     beqz  t1, slow_exit
      nop
     DISPATCH
