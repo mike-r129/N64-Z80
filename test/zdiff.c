@@ -43,6 +43,39 @@ static void filter_direct(Run* r) {
 
 static void poke(uint16_t addr, uint8_t v) { m0[addr] = m1[addr] = m2[addr] = v; }
 
+// Replays a mismatching case one instruction at a time (each core from its
+// own previous state, on fresh copies of the image) and prints the first
+// instruction after which the cores disagree. Leaves m1 = m2 = m0.
+static Run ba, bb;
+static void bisect(const zcore* ref, const zcore* cand, const St* s0, uint32_t until, int direct) {
+  memcpy(m1, m0, sizeof m0);
+  memcpy(m2, m0, sizeof m0);
+  St sa = *s0, sb = *s0;
+  for (int k = 0; k < 500 && (int32_t)(until - sa.cyc) > 0; k++) {
+    memset(&ba, 0, sizeof ba); memset(&bb, 0, sizeof bb);
+    ba.st = sa; bb.st = sb; ba.mem = m1; bb.mem = m2; ba.direct = bb.direct = direct;
+    uint16_t pc = sa.pc;
+    ref->diff_run(&ba, sa.cyc + 1);
+    cand->diff_run(&bb, sb.cyc + 1);
+    if (direct) { filter_direct(&ba); filter_direct(&bb); }
+    int nev = ba.nev < ZD_EV_MAX ? ba.nev : ZD_EV_MAX;
+    if (memcmp(&ba.st, &bb.st, sizeof ba.st) || ba.nev != bb.nev ||
+        memcmp(ba.ev, bb.ev, sizeof(Ev) * nev) || memcmp(m1, m2, sizeof m1)) {
+      tlog("  first divergence: instruction %d at %04x, bytes %02x %02x %02x %02x\n", k, pc,
+           m0[pc], m0[(uint16_t)(pc + 1)], m0[(uint16_t)(pc + 2)], m0[(uint16_t)(pc + 3)]);
+      dump("before", &sa); dump("ref", &ba.st); dump("new", &bb.st);
+      for (int i = 0; (i < ba.nev || i < bb.nev) && i < ZD_EV_MAX; i++)
+        tlog("    ev%d ref %d %04x %02x @%lu | new %d %04x %02x @%lu\n", i,
+             ba.ev[i].kind, ba.ev[i].addr, ba.ev[i].val, (unsigned long)ba.ev[i].cyc,
+             bb.ev[i].kind, bb.ev[i].addr, bb.ev[i].val, (unsigned long)bb.ev[i].cyc);
+      break;
+    }
+    sa = ba.st; sb = bb.st;
+  }
+  memcpy(m1, m0, sizeof m0);
+  memcpy(m2, m0, sizeof m0);
+}
+
 long zdiff(const zcore* ref, const zcore* cand, const zdiff_cfg* cfg) {
   rs = 88172645463325252ull ^ (cfg->seed * 0x9E3779B97F4A7C15ull);
   long bad = 0;
@@ -104,6 +137,7 @@ long zdiff(const zcore* ref, const zcore* cand, const zdiff_cfg* cfg) {
           tlog("    ev%d ref %d %04x %02x @%lu | new %d %04x %02x @%lu\n", i,
                ra.ev[i].kind, ra.ev[i].addr, ra.ev[i].val, (unsigned long)ra.ev[i].cyc,
                rb.ev[i].kind, rb.ev[i].addr, rb.ev[i].val, (unsigned long)rb.ev[i].cyc);
+        bisect(ref, cand, &s, until, cfg->direct);
       }
       bad++;
     }
