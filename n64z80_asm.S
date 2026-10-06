@@ -1756,6 +1756,9 @@ bounce:
 unbounce:
     subu  t0, rPC, rBIAS
     andi  t0, t0, 0xFFFF
+    sltu  t1, rPC0, t0
+    beqz  t1, edge_exit             # wrapped past 0xFFFF: pc <= pc0 stops
+     nop
     REMAP
     b     dispatch_nocyc
      nop
