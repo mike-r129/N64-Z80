@@ -2773,6 +2773,15 @@ EDOP A8                           # ldd
     b     dispatch
      addiu rPC, rPC, 1
 
+# dst = the address of the ED byte (rPC is at the byte after it): where a
+# block instruction repeats from, as the reference's PC - 2. That is pc0
+# unless DD/FD prefixes precede the ED (a chain), which the repeat skips.
+.macro ED_PC dst
+    subu  \dst, rPC, rBIAS
+    addiu \dst, \dst, -1
+    andi  \dst, \dst, 0xFFFF
+.endm
+
 # ldir / lddr: repeat while BC != 0 by going back to the instruction itself
 # (+5, WZ = PC + 1): a loop edge, so the run stops after every iteration,
 # exactly as in the reference.
@@ -2788,10 +2797,10 @@ ldxr_tail:
     beqz  rBC, next1
      nop
     addiu rCYC, rCYC, 5
-    addiu t0, rPC0, 1
-    sh    t0, N64Z80_OFF_MEM_PTR(rZ)
+    ED_PC t0
+    addiu t1, t0, 1
     b     jp_to
-     move t0, rPC0
+     sh   t1, N64Z80_OFF_MEM_PTR(rZ)
 
 # cpi / cpd core (cpi()): subb(A, (HL), 0) with C kept, HL += a1, BC - 1,
 # Y/X from bits 1/3 of (result - H), P/V = BC != 0, WZ += a1 (the step:
@@ -2848,10 +2857,10 @@ EDOP B1
     beqz  rBC, 1f
      nop
     addiu rCYC, rCYC, 5
-    addiu t0, rPC0, 1
-    sh    t0, N64Z80_OFF_MEM_PTR(rZ)
+    ED_PC t0
+    addiu t1, t0, 1
     b     jp_to
-     move t0, rPC0
+     sh   t1, N64Z80_OFF_MEM_PTR(rZ)
 1:  lhu   t0, N64Z80_OFF_MEM_PTR(rZ)
     addiu t0, t0, 1
     sh    t0, N64Z80_OFF_MEM_PTR(rZ)
@@ -2868,8 +2877,9 @@ EDOP B9
     beqz  rBC, 1f
      nop
     addiu rCYC, rCYC, 5
+    ED_PC t0
     b     jp_to
-     move t0, rPC0
+     nop
 1:  lhu   t0, N64Z80_OFF_MEM_PTR(rZ)
     addiu t0, t0, 1
     sh    t0, N64Z80_OFF_MEM_PTR(rZ)
@@ -3600,8 +3610,9 @@ EDOP \op
     beqz  t0, next1
      nop
     addiu rCYC, rCYC, \extra
+    ED_PC t0
     b     jp_to
-     move t0, rPC0
+     nop
   .else
     b     dispatch
      addiu rPC, rPC, 1
