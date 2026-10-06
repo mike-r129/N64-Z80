@@ -48,6 +48,8 @@ typedef struct {
   unsigned nsteps;
   uint16_t last_pc;
   int direct;               // direct-write mode (zdiff_cfg.direct)
+  int split;                // split mapping (zdiff_cfg.split): odd pages read from alt
+  uint8_t* alt;             // mirror of mem, kept equal by the harness and write_byte
 } Run;
 
 typedef struct {

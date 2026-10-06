@@ -23,6 +23,8 @@ static uint32_t rnd(void) { rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17; retur
 static uint8_t m0[65536] __attribute__((aligned(16)));
 static uint8_t m1[65536] __attribute__((aligned(16)));
 static uint8_t m2[65536] __attribute__((aligned(16)));
+static uint8_t a1[65536] __attribute__((aligned(16)));   // split-mode mirrors of m1, m2
+static uint8_t a2[65536] __attribute__((aligned(16)));
 static Run ra, rb;
 
 
@@ -41,19 +43,28 @@ static void filter_direct(Run* r) {
   r->nev = k + (r->nev - n);
 }
 
-static void poke(uint16_t addr, uint8_t v) { m0[addr] = m1[addr] = m2[addr] = v; }
+static void poke(uint16_t addr, uint8_t v) { m0[addr] = m1[addr] = m2[addr] = a1[addr] = a2[addr] = v; }
+
+// Image restore: m1, m2 (and their mirrors) from m0, the whole image or one page.
+static void restore(unsigned from, unsigned len) {
+  memcpy(&m1[from], &m0[from], len);
+  memcpy(&m2[from], &m0[from], len);
+  memcpy(&a1[from], &m0[from], len);
+  memcpy(&a2[from], &m0[from], len);
+}
 
 // Replays a mismatching case one instruction at a time (each core from its
 // own previous state, on fresh copies of the image) and prints the first
 // instruction after which the cores disagree. Leaves m1 = m2 = m0.
 static Run ba, bb;
-static void bisect(const zcore* ref, const zcore* cand, const St* s0, uint32_t until, int direct) {
-  memcpy(m1, m0, sizeof m0);
-  memcpy(m2, m0, sizeof m0);
+static void bisect(const zcore* ref, const zcore* cand, const St* s0, uint32_t until, int direct,
+                   int split) {
+  restore(0, sizeof m0);
   St sa = *s0, sb = *s0;
   for (int k = 0; k < 500 && (int32_t)(until - sa.cyc) > 0; k++) {
     memset(&ba, 0, sizeof ba); memset(&bb, 0, sizeof bb);
     ba.st = sa; bb.st = sb; ba.mem = m1; bb.mem = m2; ba.direct = bb.direct = direct;
+    ba.alt = a1; bb.alt = a2; ba.split = bb.split = split;
     uint16_t pc = sa.pc;
     ref->diff_run(&ba, sa.cyc + 1);
     cand->diff_run(&bb, sb.cyc + 1);
@@ -72,8 +83,7 @@ static void bisect(const zcore* ref, const zcore* cand, const St* s0, uint32_t u
     }
     sa = ba.st; sb = bb.st;
   }
-  memcpy(m1, m0, sizeof m0);
-  memcpy(m2, m0, sizeof m0);
+  restore(0, sizeof m0);
 }
 
 long zdiff(const zcore* ref, const zcore* cand, const zdiff_cfg* cfg) {
@@ -87,8 +97,7 @@ long zdiff(const zcore* ref, const zcore* cand, const zdiff_cfg* cfg) {
         bad++;
       }
       for (int i = 0; i < 65536; i += 4) { uint32_t v = rnd(); memcpy(&m0[i], &v, 4); }
-      memcpy(m1, m0, sizeof m0);
-      memcpy(m2, m0, sizeof m0);
+      restore(0, sizeof m0);
     }
     St s;
     memset(&s, 0, sizeof s);
@@ -99,6 +108,7 @@ long zdiff(const zcore* ref, const zcore* cand, const zdiff_cfg* cfg) {
     s.int_pending = ((k >> 8) & 7) == 0; s.nmi_pending = ((k >> 11) & 15) == 0;
     s.irq_line = ((k >> 15) & 7) == 0; s.iff_delay = ((k >> 18) & 7) == 0; s.int_data = 0xFF;
     s.cyc = rnd(); s.irq_redeliver = rnd() & 0xff;
+    if (cfg->split && (rnd() & 1)) s.pc = (s.pc & 0xFF00) | (0xF9 + rnd() % 7);
     // Opcode stream at PC: prefixes and the DD/FD CB forms more often.
     static const uint8_t pre[] = { 0xDD, 0xFD, 0xCB, 0xED };
     uint16_t pc = s.pc;
@@ -110,6 +120,7 @@ long zdiff(const zcore* ref, const zcore* cand, const zdiff_cfg* cfg) {
 
     memset(&ra, 0, sizeof ra); memset(&rb, 0, sizeof rb);
     ra.direct = rb.direct = cfg->direct;
+    ra.split = rb.split = cfg->split; ra.alt = a1; rb.alt = a2;
     ra.st = s; rb.st = s; ra.mem = m1; rb.mem = m2;
     ref->diff_run(&ra, until);
     cand->diff_run(&rb, until);
@@ -120,8 +131,7 @@ long zdiff(const zcore* ref, const zcore* cand, const zdiff_cfg* cfg) {
     for (int pg = 0; pg < 256; pg++) {
       if (!(ra.dirty[pg] | rb.dirty[pg] | (cfg->direct && zd_direct_page(pg)))) continue;
       if (memcmp(&m1[pg << 8], &m2[pg << 8], 256)) memd = 1;
-      memcpy(&m1[pg << 8], &m0[pg << 8], 256);
-      memcpy(&m2[pg << 8], &m0[pg << 8], 256);
+      restore(pg << 8, 256);
     }
     int nev = ra.nev < ZD_EV_MAX ? ra.nev : ZD_EV_MAX;
     int diff = memcmp(&ra.st, &rb.st, sizeof ra.st) || ra.nev != rb.nev ||
@@ -137,7 +147,7 @@ long zdiff(const zcore* ref, const zcore* cand, const zdiff_cfg* cfg) {
           tlog("    ev%d ref %d %04x %02x @%lu | new %d %04x %02x @%lu\n", i,
                ra.ev[i].kind, ra.ev[i].addr, ra.ev[i].val, (unsigned long)ra.ev[i].cyc,
                rb.ev[i].kind, rb.ev[i].addr, rb.ev[i].val, (unsigned long)rb.ev[i].cyc);
-        bisect(ref, cand, &s, until, cfg->direct);
+        bisect(ref, cand, &s, until, cfg->direct, cfg->split);
       }
       bad++;
     }

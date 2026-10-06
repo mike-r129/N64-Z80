@@ -71,6 +71,14 @@ static void run_zdiff(void) {
   bad = zdiff(&REF_core, &ASM_core, &cfg);
   verdict(bad == 0, "zdiff %s: %ld cases, %ld mismatches", "REF vs ASM (direct-write filter)", cfg.cases, bad);
 
+  cfg.direct = 0;
+  cfg.split = 1;
+  uint32_t fb0 = n64z80_nfallback;
+  bad = zdiff(&REF_core, &ASM_core, &cfg);
+  verdict(bad == 0, "zdiff %s: %ld cases, %ld mismatches", "REF vs ASM (split mapping)", cfg.cases, bad);
+  tlog("    ASM C-fallback instructions: %lu\n", (unsigned long)(n64z80_nfallback - fb0));
+  cfg.split = 0;
+
   // Negative controls: each planted bug must produce mismatches.
   const zcore* mut[] = { &MUT1_core, &MUT2_core, &MUT3_core, &MUT4_core };
   cfg.direct = 0;
