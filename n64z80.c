@@ -1,6 +1,5 @@
 // C side of the n64z80 core: init, and the C fallback that n64z80_asm.S
-// calls for an instruction that straddles a mapping boundary and for IM 0
-// interrupts.
+// calls for an opcode it has no handler for (none at present).
 //
 // The fallback is the reference core itself: build/n64z80_ref.c is
 // reference/z80.c with its write_byte / port_out call sites rewritten to the
@@ -53,12 +52,6 @@ static void n64z80_c_out(z80* z, uint16_t port, uint8_t val) {
 void n64z80_c_exec(z80* z, const uint8_t* host) {
   if (*host != rb(z, z->pc)) n64z80_fetch_mismatch++;
   exec_opcode(z, nextb(z));
-}
-
-// Interrupt service after an instruction (z80_step's predicate).
-void n64z80_c_service(z80* z) {
-  if (z->iff_delay | (uint8_t)(z->nmi_pending | (z->int_pending & z->iff1)))
-    process_interrupts(z);
 }
 
 void n64z80_init(z80* z) { n64z80_ref_init(z); }

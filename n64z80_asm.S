@@ -77,6 +77,7 @@ n64z80_rhi:     .word 0     # R = rhi | ((rRB + rN) & 0x7F)
 n64z80_pc0:     .word 0     # rPC0 across C calls
 n64z80_lastpc:  .word 0     # the run's last_pc pointer
 n64z80_wmap:    .word 0     # write page map (n64z80_set_wmap), or 0
+n64z80_im0:     .word 0     # IM 0 instruction running: 0x10000 | pc0
     .globl n64z80_nfallback
 n64z80_nfallback: .word 0   # instructions run by the C fallback (statistics)
 #ifdef N64Z80_PROF
@@ -362,9 +363,11 @@ jp_remap:
 slow_exit:
     lw    t0, %gp_rel(n64z80_cbase)(gp)
     lw    t1, %gp_rel(n64z80_until)(gp)
+    lw    t2, %gp_rel(n64z80_im0)(gp)
     subu  t0, t0, t1
     addu  rCYC, rCYC, t0
-    sw    t1, %gp_rel(n64z80_cbase)(gp)
+    bnez  t2, svc_im0_done
+     sw   t1, %gp_rel(n64z80_cbase)(gp)
 
     ld    t0, N64Z80_OFF_EVENTS(rZ)
     ld    t1, N64Z80_OFF_EV_MASK(rZ)
@@ -1776,14 +1779,16 @@ svc_nmi:
      addiu rCYC, rCYC, 11
 
 # Accepted INT: IM 1 calls 0x38 (+13), IM 2 the vector at I << 8 |
-# int_data (+19); IM 0 executes int_data in the reference's C.
+# int_data (+19), IM 0 executes int_data (+11 and its own cycles).
 svc_int:
     lbu   t0, N64Z80_OFF_IM(rZ)
+    sb    zero, N64Z80_OFF_INT_PENDING(rZ)
+    sb    zero, N64Z80_OFF_IFF2(rZ)
     li    t1, 1
     beq   t0, t1, 1f
      li   t5, 0x38
     li    t1, 2
-    bne   t0, t1, svc_c
+    bne   t0, t1, svc_im0
      lbu  t0, N64Z80_OFF_I(rZ)
     lbu   t1, N64Z80_OFF_INT_DATA(rZ)
     sll   t0, t0, 8
@@ -1796,8 +1801,6 @@ svc_int:
     or    t5, t5, t1
     addiu rCYC, rCYC, 6             # 19 in all
 1:  addiu rCYC, rCYC, 13
-    sb    zero, N64Z80_OFF_INT_PENDING(rZ)
-    sb    zero, N64Z80_OFF_IFF2(rZ)
 
 # Both: HALT ends, IFF1 = 0, R + 1, push PC, PC = WZ = t5. A write callback
 # in the push may poison: undo it, as the C service never poisons.
@@ -1820,12 +1823,47 @@ svc_call:
     b     se_halted
      sw   t1, %gp_rel(n64z80_cbase)(gp)
 
-svc_c:
-    la    t9, n64z80_c_service
-    jal   call_c
+# IM 0 (t0 = the mode): exec_opcode(int_data) with the PC where it is. It
+# runs from the bounce buffer as the opcode at PC - 1, followed by the bytes
+# at PC (its operands), with rPC0 = PC - 1 (block repeats) and without
+# counting an instruction. Poisoned, so its tail comes back to slow_exit,
+# which sees n64z80_im0, restores rPC0 and resumes at the stop test: the
+# reference services once per instruction. Modes 3 and up only acknowledge
+# (the reference just reports them).
+svc_im0:
+    sb    zero, N64Z80_OFF_HALTED(rZ)
+    sb    zero, N64Z80_OFF_IFF1(rZ)
+    sb    zero, N64Z80_OFF_EVM_INT(rZ)
+    sb    zero, N64Z80_OFF_EVM_LINE(rZ)
+    lbu   t0, N64Z80_OFF_IM(rZ)
+    bnez  t0, se_halted
+     addiu rRB, rRB, 1              # the service's R + 1
+    addiu rRB, rRB, 1               # exec_opcode's
+    addiu rCYC, rCYC, 11
+    lw    t0, %gp_rel(n64z80_cbase)(gp)
+    addu  t0, t0, rCYC
+    sw    t0, %gp_rel(n64z80_cbase)(gp)
+    move  rCYC, zero
+    lui   t0, 1
+    or    t0, t0, rPC0
+    sw    t0, %gp_rel(n64z80_im0)(gp)
+    subu  t0, rPC, rBIAS
+    addiu t0, t0, -1
+    bal   bounce_fill
+     andi t0, t0, 0xFFFF
+    lbu   t1, N64Z80_OFF_INT_DATA(rZ)
+    sb    t1, 0(rPC)
+    subu  rPC0, rPC, rBIAS
+    sll   t1, t1, 2
+    addu  t1, t1, gp
+    lw    t1, %gp_rel(n64z80_optab)(t1)
+    jr    t1
      nop
+
+svc_im0_done:
+    sw    zero, %gp_rel(n64z80_im0)(gp)
     b     se_halted
-     nop
+     andi rPC0, t2, 0xFFFF
 
 pfx_fallback:
     move  t0, rPC0
