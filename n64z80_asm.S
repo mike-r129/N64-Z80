@@ -778,21 +778,21 @@ call_taken:
 # ALU on A with operand t0 (rPC advanced, cycles charged).
 alu_add:
     ADDB  rA, t0, zero
-    andi  rA, t2, 0xFF
-    DISPATCH
+    b     dispatch
+     andi  rA, t2, 0xFF
 alu_adc:
     andi  t1, rF, 1
     ADDB  rA, t0, t1
-    andi  rA, t2, 0xFF
-    DISPATCH
+    b     dispatch
+     andi  rA, t2, 0xFF
 alu_sub:                          # subb: addb(a, ~b, 1), then C/H flipped, N
     xori  t0, t0, 0xFF
     li    t1, 1
     ADDB  rA, t0, t1
     xori  rF, rF, 0x11
     ori   rF, rF, 0x02
-    andi  rA, t2, 0xFF
-    DISPATCH
+    b     dispatch
+     andi  rA, t2, 0xFF
 alu_sbc:
     andi  t1, rF, 1
     xori  t1, t1, 1
@@ -800,8 +800,8 @@ alu_sbc:
     ADDB  rA, t0, t1
     xori  rF, rF, 0x11
     ori   rF, rF, 0x02
-    andi  rA, t2, 0xFF
-    DISPATCH
+    b     dispatch
+     andi  rA, t2, 0xFF
 alu_and:
     and   rA, rA, t0
     addu  t1, rA, gp
@@ -826,8 +826,8 @@ alu_cp:                           # sub without the result; Y/X from the operand
     xori  rF, rF, 0x11
     ori   rF, rF, 0x02
     andi  rF, rF, 0xD7
-    or    rF, rF, t9
-    DISPATCH
+    b     dispatch
+     or    rF, rF, t9
 
 # INC / DEC of byte t0: t2 = result byte, F as the reference's inc()/dec()
 # (C kept). bal; clobbers t1, t3-t7, t9, v0.
@@ -859,8 +859,8 @@ OP \op
     GETR  t0, \s
     SETR  \d, t0
     addiu rPC, rPC, 1
-    CHARGE \op
-    DISPATCH
+    b     dispatch
+     CHARGE \op
 .endm
 
 .macro LD_R_HL op, r
@@ -939,8 +939,8 @@ OP \op
 OP \op
     FETCH16 \rr, t0
     addiu rPC, rPC, 3
-    CHARGE \op
-    DISPATCH
+    b     dispatch
+     CHARGE \op
 .endm
 
 .macro INC_RR op, rr
@@ -948,8 +948,8 @@ OP \op
     addiu \rr, \rr, 1
     andi  \rr, \rr, 0xFFFF
     addiu rPC, rPC, 1
-    CHARGE \op
-    DISPATCH
+    b     dispatch
+     CHARGE \op
 .endm
 
 .macro DEC_RR op, rr
@@ -957,8 +957,8 @@ OP \op
     addiu \rr, \rr, -1
     andi  \rr, \rr, 0xFFFF
     addiu rPC, rPC, 1
-    CHARGE \op
-    DISPATCH
+    b     dispatch
+     CHARGE \op
 .endm
 
 # ADD HL,rr (addhl): S Z P kept; H, C and Y/X from the high byte; N = 0;
@@ -982,8 +982,8 @@ OP \op
     or    rF, rF, t4
     andi  rHL, t0, 0xFFFF
     addiu rPC, rPC, 1
-    CHARGE \op
-    DISPATCH
+    b     dispatch
+     CHARGE \op
 .endm
 
 # Condition test: t3 = F & mask; `set` = 1 if the condition holds when the
@@ -1064,8 +1064,8 @@ OP \op
 OP \op
     POP16 \rr, t0, t1
     addiu rPC, rPC, 1
-    CHARGE \op
-    DISPATCH
+    b     dispatch
+     CHARGE \op
 .endm
 
 # ---------------------------------------------------------------------------
@@ -1325,8 +1325,8 @@ OP 02                           # ld (bc),a: WZ = A << 8 | (BC + 1) & 0xFF
     andi  t0, t0, 0xFF
     sll   t1, rA, 8
     or    t0, t0, t1
-    sh    t0, N64Z80_OFF_MEM_PTR(rZ)
-    DISPATCH
+    b     dispatch
+     sh    t0, N64Z80_OFF_MEM_PTR(rZ)
 
 OP 12                           # ld (de),a
     CHARGE 12
@@ -1338,8 +1338,8 @@ OP 12                           # ld (de),a
     andi  t0, t0, 0xFF
     sll   t1, rA, 8
     or    t0, t0, t1
-    sh    t0, N64Z80_OFF_MEM_PTR(rZ)
-    DISPATCH
+    b     dispatch
+     sh    t0, N64Z80_OFF_MEM_PTR(rZ)
 
 OP 0A                           # ld a,(bc): WZ = BC + 1
     READ8 rA, rBC, t0
@@ -3158,8 +3158,8 @@ OP DB
     lw    t1, F_WR+4(sp)
     addiu t0, rA, 1
     or    t0, t0, t1
-    sh    t0, N64Z80_OFF_MEM_PTR(rZ)
-    DISPATCH
+    b     dispatch
+     sh    t0, N64Z80_OFF_MEM_PTR(rZ)
 
 # out (n),a: WZ = (n + 1) | A << 8, the same bit-8 carry (n = 0xFF).
 OP D3
@@ -3175,8 +3175,8 @@ OP D3
     sll   t1, rA, 8
     addiu t0, t0, 1
     or    t0, t0, t1
-    sh    t0, N64Z80_OFF_MEM_PTR(rZ)
-    DISPATCH
+    b     dispatch
+     sh    t0, N64Z80_OFF_MEM_PTR(rZ)
 
 OP F3                           # di: IFF1 = IFF2 = 0 (set_iff1 clears the INT lanes)
     sb    zero, N64Z80_OFF_IFF1(rZ)
