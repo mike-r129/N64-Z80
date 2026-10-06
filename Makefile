@@ -23,6 +23,11 @@ ZEX_SETS ?= 3
 ZEX_ONLY ?= 0
 # PROF=1: per-opcode cycle profile of the asm core on the traces (slower).
 PROF ?= 0
+# N64Z80_C_FALLBACK=1: link the reference as a fallback for table entries
+# without an asm handler (a debug option; there are none at present).
+N64Z80_C_FALLBACK ?= 0
+N64_CFLAGS += -DN64Z80_C_FALLBACK=$(N64Z80_C_FALLBACK)
+N64_ASFLAGS += -DN64Z80_C_FALLBACK=$(N64Z80_C_FALLBACK)
 ifeq ($(PROF),1)
 N64_CFLAGS += -DN64Z80_PROF
 N64_ASFLAGS += -DN64Z80_PROF

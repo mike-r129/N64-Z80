@@ -1,9 +1,10 @@
 # n64z80: Zilog Z80 interpreter for the N64 (VR4300, libdragon o64 ABI).
 #
 # n64z80_run is the reference z80_run loop (reference/z80.c) with the Z80
-# registers in MIPS registers. Opcodes without an asm handler (n64z80_optab
-# entries left at op_fallback) execute in the C fallback (n64z80.c: one
-# reference instruction). Design (PLAN.md §4, docs/design-notes.md):
+# registers in MIPS registers. Every opcode has an asm handler; a debug
+# build (N64Z80_C_FALLBACK=1) can send table entries without one to the C
+# fallback (n64z80.c: one reference instruction), and otherwise such an
+# entry is a build error. Design (PLAN.md §4, docs/design-notes.md):
 #
 #   - PC is a host pointer (rPC) plus a bias (rBIAS = rmap[page], so the
 #     Z80 PC is rPC - rBIAS). The dispatch fetches through rPC while it is
@@ -32,6 +33,9 @@
 #     (wr8 remaps the PC and poisons). Other struct fields are not written
 #     back for write callbacks (design-notes, M0 review item 5).
 #include <regdef.h>
+#ifndef N64Z80_C_FALLBACK
+#define N64Z80_C_FALLBACK 0
+#endif
 #include "n64z80_offsets.h"
 #include "n64z80_tables.h"   // generated: CYC00_xx / CYCED_xx / CYCDD_xx, sz53p
 
@@ -474,6 +478,7 @@ svc_delay:
     b     se_halted
      sb   t0, N64Z80_OFF_EVM_LINE(rZ)
 
+#if N64Z80_C_FALLBACK
 # ---------------------------------------------------------------------------
 # C fallback: the whole instruction at rPC (== rPC0) runs in the reference.
 # The fallback re-executes the instruction's R increments, so give back the
@@ -497,6 +502,7 @@ op_fallback:
     beqz  t1, slow_exit
      nop
     DISPATCH
+#endif
 
 # ---------------------------------------------------------------------------
 # Call the C function t9(rZ, a1) with the state written back to the struct,
@@ -1875,11 +1881,13 @@ svc_im0_done:
     b     se_halted
      andi rPC0, t2, 0xFFFF
 
+#if N64Z80_C_FALLBACK
 pfx_fallback:
     move  t0, rPC0
     REMAP
     b     op_fallback
      addiu rRB, rRB, -1
+#endif
 
 # Jump through `table` on the byte at rPC+1 (t0), with rPC advanced to it.
 .macro PREFIX table, group
@@ -3609,9 +3617,18 @@ EDOP \op
     ED_IOBLK BB, outx_core, -1, 1, 0    # otdr: no +5
 
 # ===========================================================================
-# Dispatch tables, built from the handlers that exist: an opcode without
-# one runs in the C fallback (prefixed ones through pfx_fallback). .ifdef
-# only sees labels defined above it, so the tables must stay at the end.
+# Dispatch tables, built from the handlers that exist. .ifdef only sees
+# labels defined above it, so the tables must stay at the end.
+
+# A table entry without a handler: the C fallback `fb` in a debug build, a
+# build error otherwise.
+.macro NOHANDLER fb, name
+#if N64Z80_C_FALLBACK
+    .word \fb
+#else
+    .error "n64z80: no asm handler for \name"
+#endif
+.endm
     .section .sdata
     .subsection 0
 #ifdef N64Z80_DCACHE_ALIGN
@@ -3626,7 +3643,7 @@ n64z80_optab:
     .ifdef op_\hi\lo
     .word op_\hi\lo
     .else
-    .word op_fallback
+    NOHANDLER op_fallback, \hi\lo
     .endif
     .endr
     .endr
@@ -3639,7 +3656,7 @@ n64z80_cbtab:
     .ifdef op_CB_\hi\lo
     .word op_CB_\hi\lo
     .else
-    .word pfx_fallback
+    NOHANDLER pfx_fallback, prefixed \hi\lo
     .endif
     .endr
     .endr
@@ -3650,7 +3667,7 @@ n64z80_xcbtab:
     .ifdef op_XC_\hi\lo
     .word op_XC_\hi\lo
     .else
-    .word pfx_fallback
+    NOHANDLER pfx_fallback, prefixed \hi\lo
     .endif
     .endr
     .endr
@@ -3664,7 +3681,7 @@ n64z80_edtab:
     .word op_ED_\hi\lo
     .else
     .ifdef ED_OP_\hi\lo
-    .word pfx_fallback
+    NOHANDLER pfx_fallback, prefixed \hi\lo
     .else
     .word ed_nop
     .endif
@@ -3685,7 +3702,7 @@ n64z80_edtab:
     .word op_\p\()_\hi\lo
     .else
     .ifdef DDFD_IZ_\hi\lo
-    .word pfx_fallback
+    NOHANDLER pfx_fallback, prefixed \hi\lo
     .else
     .ifdef CHAIN_\hi\lo
     .word ddfd_chain
@@ -3693,7 +3710,7 @@ n64z80_edtab:
     .ifdef op_\hi\lo
     .word ddfd_base
     .else
-    .word pfx_fallback
+    NOHANDLER pfx_fallback, prefixed \hi\lo
     .endif
     .endif
     .endif

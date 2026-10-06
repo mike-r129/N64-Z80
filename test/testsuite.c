@@ -44,8 +44,10 @@ extern const uint8_t zex_prelim[], zex_prelim_end[];
 extern const uint8_t zex_zexdoc[], zex_zexdoc_end[];
 extern const uint8_t zex_zexall[], zex_zexall_end[];
 
+#if N64Z80_C_FALLBACK
 // n64z80.c: fallback entries whose asm fetch pointer disagreed with the rmap.
 extern uint32_t n64z80_fetch_mismatch;
+#endif
 // n64z80_asm.S: instructions the asm core ran through the C fallback.
 extern uint32_t n64z80_nfallback;
 
@@ -237,9 +239,20 @@ int main(void) {
   debug_init_isviewer();
   debug_init_usblog();
   dfs_init(DFS_DEFAULT_LOCATION);
-  tlog("\nN64Z80 testsuite (M1: asm run loop, C fallback for every opcode)\n");
+  tlog("\nN64Z80 testsuite (asm core vs the reference)\n");
   tlog("config: ZDIFF_CASES=%d ZDIFF_SEED=%d ZEX_MAX_STEPS=%d ZEX_SETS=%d ZEX_ONLY=%d\n", ZDIFF_CASES,
        ZDIFF_SEED, ZEX_MAX_STEPS, ZEX_SETS, ZEX_ONLY);
+
+  // z80_init is plain C in the asm core: it must leave every byte of the
+  // struct as the reference's does.
+  memset(REF_core.cpu, 0x5A, sizeof(z80));
+  memset(ASM_core.cpu, 0x5A, sizeof(z80));
+  REF_core.init(REF_core.cpu);
+  ASM_core.init(ASM_core.cpu);
+  long nd = 0;
+  for (size_t i = 0; i < sizeof(z80); i++)
+    nd += ((uint8_t*)REF_core.cpu)[i] != ((uint8_t*)ASM_core.cpu)[i];
+  verdict(nd == 0, "%s: %ld bytes differ from the reference's (%ld)", "ASM z80_init", nd, 0);
 
   if (!ZEX_ONLY) {
     run_zdiff();
@@ -249,8 +262,10 @@ int main(void) {
     bench_window_copy();
   }
   run_zex(&ASM_core);
+#if N64Z80_C_FALLBACK
   verdict(n64z80_fetch_mismatch == 0, "%s: %ld fetch pointer mismatches (%ld)", "ASM rmap mapping",
           (long)n64z80_fetch_mismatch, 0);
+#endif
 
   tlog(">>> SUMMARY %s: %d failure(s)\n", failures ? "FAIL" : "PASS", failures);
   tlog("%s\n", DONE_MARKER);
