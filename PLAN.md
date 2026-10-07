@@ -370,7 +370,10 @@ number in `docs/measurements.md`)
   µs/instr on the Metal Slug trace (C core 1.59, 3.2×), see design notes.*
   - Exit: ZEXALL plus differential clean with the fallback disabled; ≤ 0.45
     µs/instruction.
-- **M5: mvs64 integration** (on a branch in mvs64).
+- **M5: mvs64 integration** (on a branch in mvs64). *2026-10-07: mvs64 PR
+  #24 (audio hash, merged) and #25 (`Z80_CORE=asm`, open until it has been
+  heard on hardware); all ares gates pass; Metal Slug's mission ~14 -> ~38
+  fps with real-time sound.*
   - Vendor the core into mvs64 as `n64z80/` (like `m64k/`), add a
     `Z80_CORE=asm|c` build switch, add the owner-side window/wmap setup, and
     check the `z80_anchor.c` / m64k dcache pins.
