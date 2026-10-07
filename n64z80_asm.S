@@ -83,9 +83,11 @@
 # (0x800), cycdd (0x900); subsection 1 these variables and the save area
 # (0xA00-0xAEF); subsection 2 the tables only some prefixed instructions
 # use (cbtab, xcbtab, edtab, ddtab) and the bounce buffer, from 0xAF0. With
-# N64Z80_DCACHE_ALIGN the block starts on an 8 KB boundary, so those
-# offsets are the sets, and the owner's per-instruction data (rmap, wmap,
-# Z80 RAM, the struct) belongs in sets 0xB00-0x1FFF, clear of the hot part. Without the alignment the
+# N64Z80_DCACHE_ALIGN the block starts on an 8 KB boundary (plus
+# N64Z80_DCACHE_OFFSET, to make room for other pinned data), so those
+# offsets (plus the offset) are the sets, and the owner's per-instruction
+# data (rmap, wmap, Z80 RAM, the struct) belongs in the 0x1510 bytes of sets
+# after the hot part (0xB00-0x1FFF), clear of it. Without the alignment the
 # block is 16-byte aligned: adding a variable never regroups table entries
 # into different lines (an 8-byte shift once cost 2%).
     .section .sdata
@@ -3791,6 +3793,9 @@ EDOP \op
     .subsection 0
 #ifdef N64Z80_DCACHE_ALIGN
     .balign 8192
+#ifdef N64Z80_DCACHE_OFFSET
+    .space N64Z80_DCACHE_OFFSET     # the block starts this far into the page
+#endif
 #else
     .balign 16
 #endif
