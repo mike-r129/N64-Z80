@@ -398,3 +398,27 @@ Result: **0.501 us/instr** on Metal Slug (C core 1.585 in the same build,
 expected 40-55 cycles for this design (we are at 47); the remaining levers
 are a computed-goto dispatch (~1-2 cycles; needs a free register), a lighter
 port callback (a contract question), and the pre-decoded pages of M6.
+
+## 2026-10-07 (M5): in mvs64
+
+mvs64 PR #24 (merged) adds `MVS64_ACRC`, a CRC of every generated audio
+buffer under DET_AUDIO, validated as the plan asked: two builds differing in
+unrelated code print the same stream, a Z80 mutant (AND never sets Z)
+diverges at once. A first mutant (BIT without H) never changed Metal Slug's
+sound: its driver doesn't look at H after BIT.
+
+mvs64 PR #25 (open: real-hardware listening pending) vendors the core as
+`n64z80/` with `Z80_CORE=c|asm` (default `c`):
+
+- **Placement.** m64k pins its context at dcache page offset 0x8C0-0xEBF, so
+  the core's block starts at 0xEC0 (new knob `N64Z80_DCACHE_OFFSET`; hot part
+  0xEC0-0x198F) and sound_neogeo.c pins the owner's struct and read map from
+  0x1990, the work RAM wrapping to 0x5E8. Only the prefix tables and the
+  write map's live line share sets with anything.
+- **Gates:** C vs asm in ares with DET_AUDIO + INPUT + ACRC + TRCRC: audio,
+  Z80 steps per interval and the 68k state identical over 7,793 frames of
+  samsho2 and 9,344 of Metal Slug; the PC gate is unchanged.
+- **In game:** the Z80 costs 0.69 us/instruction (C: 1.61), not the bench's
+  0.50: the 68k evicts the caches between slices, as expected. Metal Slug's
+  mission in a release build goes from ~14 fps with starved sound to ~38 fps
+  with sound in real time (no underruns); attract ~36 -> ~48 fps.

@@ -14,7 +14,9 @@ environments.
 > asm (no C fallback in the default build) and bit-exact (differential test,
 > ZEXDOC/ZEXALL, recorded Metal Slug traces), at 0.50 µs per instruction on
 > the Metal Slug trace, 3.2x the C core; M4's 0.45 µs target is not reached
-> yet. mvs64 integration (M5) is next. See [PLAN.md](PLAN.md).
+> yet. In mvs64 (M5, `make ... Z80_CORE=asm`) it makes the same sound as
+> the C core and takes Metal Slug's mission from ~14 to ~38 fps in ares. See
+> [PLAN.md](PLAN.md).
 
 ## Features
 

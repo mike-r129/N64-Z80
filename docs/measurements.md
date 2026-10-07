@@ -78,6 +78,10 @@ Conventions:
 | 2026-10-06 | e3bc6eb | `ZEX_SETS=0` / `=3` | ares | **save area off the stack: Metal Slug** / samsho2 | **501 / 512** / 790 / 835 ns/instr (REF 1,585) |
 | 2026-10-06 | e3bc6eb | `ZEX_ONLY=1 ZEX_SETS=2 ZEX_MAX_STEPS=0`, no C fallback (M4 exit) | ares | **full ZEXALL through `z80_run`** | **67/67 groups exact** (5,764,172,722 instr; steps, cycles, CRC) |
 | 2026-10-06 | e3bc6eb | testsuite, defaults (no C fallback) | ares | init vs reference; zdiff 20,000 / direct 5,000 / split 5,000; controls; replays; prelim, ZEXDOC, ZEXALL subsets | all PASS; Metal Slug 512, samsho2 835 ns/instr (REF 1,598 / 1,902) |
+| 2026-10-07 | mvs64 #25 (n64z80 92eac14) | Metal Slug DET_AUDIO + INPUT + ACRC, C vs asm | ares | in-game Z80 cost (`abstat.py`) | 1.61 -> **0.69** us/instr |
+| 2026-10-07 | ″ | ″, same 9,384 frames (`abframe.py`) | ares | sound share of a frame / fps | 91% / 33.4 -> 60% / 40.4 (mission half: 103% -> 69%) |
+| 2026-10-07 | ″ | Metal Slug release (INPUT), same 2,835 frames | ares | attract / mission fps | 36.1 / 13.9 (sound starved) -> 48.0 / 38.2 (no underruns) |
+| 2026-10-07 | ″ | samsho2 / Metal Slug, DET + ACRC + TRCRC, C vs asm | ares | core-swap gate | identical over 7,793 / 9,344 frames |
 
 ## Notes on the rows
 
