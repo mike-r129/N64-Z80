@@ -323,7 +323,7 @@ mips64 toolchains are n32/n64 ABI, not libdragon's o64.
    - mvs64's `MVS64_Z80OPHIST` PC build gives the opcode mix to compare
      against (table in §10).
 4. **Driving ares headless:** mvs64 has
-   `C:\Users\Mike\Desktop\VSCode Projects\N64-NEOGEO\mvs64\tools\ps-ares-run.ps1`,
+   `tools/ps-ares-run.ps1`,
    which launches ares, captures the ISViewer log, and kills it after N
    seconds. Print a "done" marker and stop early when you see it.
    - Known flake: the first run after a build often logs nothing or stalls,
@@ -371,8 +371,8 @@ number in `docs/measurements.md`)
   - Exit: ZEXALL plus differential clean with the fallback disabled; ≤ 0.45
     µs/instruction.
 - **M5: mvs64 integration** (on a branch in mvs64). *2026-10-07: mvs64 PR
-  #24 (audio hash, merged) and #25 (`Z80_CORE=asm`, open until it has been
-  heard on hardware); all ares gates pass; Metal Slug's mission ~14 -> ~38
+  #24 (audio hash, merged) and #25 (`Z80_CORE=asm`, now the default; heard on
+  hardware 2026-10-07, no issues); all ares gates pass; Metal Slug's mission ~14 -> ~38
   fps with real-time sound.*
   - Vendor the core into mvs64 as `n64z80/` (like `m64k/`), add a
     `Z80_CORE=asm|c` build switch, add the owner-side window/wmap setup, and
@@ -381,7 +381,7 @@ number in `docs/measurements.md`)
     the asm core gives the same WAV hash under DET_AUDIO and INPUT replay as
     the C core, so add an N64 audio-hash gate.
   - mvs64's side of this milestone, including its entry criteria and prep
-    work, is in `C:\Users\Mike\Desktop\mvs64\Z80-INTEGRATION-PLAN.md`.
+    work, is in `Z80-INTEGRATION-PLAN.md` in the mvs64 checkout.
   - Measure ares fps and sound % on Metal Slug and samsho2.
 - **M6 (optional): pre-decoded micro-op pages** (§9), only if M5 falls short.
 
@@ -496,7 +496,7 @@ counted as their own entries):
 ## 11. Workflow
 
 - Work in feature branches, open a PR on the GitHub repo
-  (https://github.com/mike-r129/N64-Z80, private), and merge
+  (https://github.com/mike-r129/N64-Z80), and merge
   it with a merge commit.
 - No `Co-Authored-By` trailers and no "Generated with Claude Code" lines in
   commits or PR bodies (the owner's global rule).

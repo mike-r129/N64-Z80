@@ -1,0 +1,13 @@
+Third-party code and data
+
+reference/z80.c and reference/z80.h are superzazu/z80, Copyright (c) 2019
+Nicolas Allemand, MIT License (reference/z80.LICENSE). The assembly core
+(n64z80_asm.S) is a bit-exact reimplementation of that core, and its cycle
+tables, flag table and case lists (build/n64z80_tables.h) are generated from
+it by tools/gen_tables.py.
+
+The ZEXDOC, ZEXALL and prelim Z80 exercisers (Frank D. Cringle 1994, J.G.
+Harston 2002, GNU GPL version 2 or later) are downloaded at build time from
+superzazu/z80 and are not part of this repository. The built testsuite ROM
+(n64z80_testsuite.z64) embeds them, and any game traces you record; do not
+redistribute it.
