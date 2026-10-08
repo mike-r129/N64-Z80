@@ -1,6 +1,6 @@
 # N64-Z80: an optimized Zilog Z80 core for Nintendo 64
 
-N64-Z80 (library prefix `n64z80`) is a hand-written MIPS assembly Z80
+N64-Z80 (library prefix `n64z80`) is a from-scratch MIPS assembly Z80
 interpreter for the Nintendo 64 (VR4300). It is the sibling of [m64k](https://github.com/mike-r129/mvs64/tree/main/m64k),
 the 68000 core used by the mvs64 Neo Geo emulator, and is meant to replace
 mvs64's C Z80 core (the sound CPU) as a drop-in, bit-exact alternative that
