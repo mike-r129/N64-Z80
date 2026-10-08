@@ -407,8 +407,8 @@ unrelated code print the same stream, a Z80 mutant (AND never sets Z)
 diverges at once. A first mutant (BIT without H) never changed Metal Slug's
 sound: its driver doesn't look at H after BIT.
 
-mvs64 PR #25 (open: real-hardware listening pending) vendors the core as
-`n64z80/` with `Z80_CORE=c|asm` (default `c`):
+mvs64 PR #25 (tested on real hardware 2026-10-07) vendors the core as
+`n64z80/` with `Z80_CORE=asm|c` (default `asm`):
 
 - **Placement.** m64k pins its context at dcache page offset 0x8C0-0xEBF, so
   the core's block starts at 0xEC0 (new knob `N64Z80_DCACHE_OFFSET`; hot part

@@ -118,4 +118,14 @@ make ZEX_ONLY=1 ZEX_SETS=2 ZEX_MAX_STEPS=0   # full ZEXALL only
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The reference C core keeps its own MIT notice.
+MIT, see [LICENSE](LICENSE). The reference C core (superzazu/z80) keeps its
+own MIT notice, and the Z80 exercisers used for testing are GPL; see
+[NOTICE](NOTICE). Never redistribute a built `n64z80_testsuite.z64`: it embeds
+the exercisers and any game traces you recorded (`test/traces/` is gitignored
+for the same reason).
+
+## Contributing
+
+Work in a feature branch and open a PR. The differential test against the
+reference core must pass (see Testing above); changes to the asm core should
+also pass ZEXALL.

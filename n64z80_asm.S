@@ -1,5 +1,8 @@
 # n64z80: Zilog Z80 interpreter for the N64 (VR4300, libdragon o64 ABI).
 #
+# Based on the reference core reference/z80.c (superzazu/z80, MIT License,
+# Copyright (c) 2019 Nicolas Allemand).
+#
 # n64z80_run is the reference z80_run loop (reference/z80.c) with the Z80
 # registers in MIPS registers. Every opcode has an asm handler; a debug
 # build (N64Z80_C_FALLBACK=1) can send table entries without one to the C
