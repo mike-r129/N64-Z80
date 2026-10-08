@@ -14,9 +14,12 @@
 #include "z80trace.h"
 #include "tlog.h"
 
+#ifdef N64
 // test/icache_pad.S: fixes this file's icache position (kept by the
-// references below past --gc-sections).
+// references below past --gc-sections). N64 only: the host build has no
+// icache to position.
 extern const char replay_icache_pad0[], replay_icache_pad1[];
+#endif
 
 #ifdef N64
 static uint32_t now32(void) { return TICKS_READ(); }
@@ -97,7 +100,9 @@ static void pout(z80* z, uint16_t port, uint8_t val) {
 }
 
 replay_result replay(const zcore* c, const uint8_t* trace, size_t len, int maxprint) {
+#ifdef N64
   __asm__ volatile("" :: "r"(replay_icache_pad0), "r"(replay_icache_pad1));
+#endif
   memset(&hot.res, 0, sizeof hot.res);
   hot.core = c; hot.cpu = c->cpu; hot.maxbad = maxprint;
   hot.buf = hot.t = trace; hot.tend = trace + len;
